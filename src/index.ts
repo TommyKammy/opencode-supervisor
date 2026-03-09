@@ -1,0 +1,87 @@
+import { Supervisor } from "./core/supervisor";
+import { CliOptions } from "./types";
+import { sleep } from "./utils";
+
+function parseArgs(argv: string[]): CliOptions {
+  const args = [...argv];
+  let command: CliOptions["command"] = "run-once";
+  let configPath: string | undefined;
+  let dryRun = false;
+
+  while (args.length > 0) {
+    const token = args.shift();
+    if (!token) {
+      continue;
+    }
+
+    if (token === "run-once" || token === "loop" || token === "status") {
+      command = token;
+      continue;
+    }
+
+    if (token === "--config") {
+      configPath = args.shift();
+      continue;
+    }
+
+    if (token === "--dry-run") {
+      dryRun = true;
+      continue;
+    }
+
+    throw new Error(`Unknown argument: ${token}`);
+  }
+
+  return { command, configPath, dryRun };
+}
+
+async function runOnceWithSupervisorLock(
+  supervisor: Supervisor,
+  command: "loop" | "run-once",
+  options: Pick<CliOptions, "dryRun">,
+): Promise<string> {
+  const lock = await supervisor.acquireSupervisorLock(command);
+  if (!lock.acquired) {
+    return `Skipped supervisor cycle: ${lock.reason}.`;
+  }
+
+  try {
+    return await supervisor.runOnce(options);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function main(): Promise<void> {
+  const options = parseArgs(process.argv.slice(2));
+  const supervisor = Supervisor.fromConfig(options.configPath);
+  const pollIntervalMs = supervisor.pollIntervalMs();
+
+  if (options.command === "status") {
+    console.log(await supervisor.status());
+    return;
+  }
+
+  if (options.command === "run-once") {
+    console.log(await runOnceWithSupervisorLock(supervisor, "run-once", { dryRun: options.dryRun }));
+    return;
+  }
+
+  while (true) {
+    try {
+      const message = await runOnceWithSupervisorLock(supervisor, "loop", { dryRun: options.dryRun });
+      console.log(`${new Date().toISOString()} ${message}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.stack ?? error.message : String(error);
+      console.error(`${new Date().toISOString()} loop-error ${message}`);
+    }
+
+    await sleep(pollIntervalMs);
+  }
+}
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+});

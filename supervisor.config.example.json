@@ -1,0 +1,66 @@
+{
+  "repoPath": "/absolute/path/to/managed-repo",
+  "repoSlug": "OWNER/REPO",
+  "defaultBranch": "main",
+  "workspaceRoot": "/absolute/path/to/worktrees",
+  "stateBackend": "json",
+  "stateFile": "./.local/state.json",
+  "stateBootstrapFile": "",
+  "agentCategoryByState": {
+    "planning": "deep",
+    "reproducing": "deep",
+    "implementing": "ultrabrain",
+    "stabilizing": "unspecified-high",
+    "draft_pr": "quick",
+    "local_review": "deep",
+    "repairing_ci": "quick",
+    "resolving_conflict": "unspecified-high",
+    "addressing_review": "deep"
+  },
+  "reasoningEffortByState": {
+    "planning": "low",
+    "reproducing": "medium",
+    "implementing": "high",
+    "stabilizing": "medium",
+    "draft_pr": "low",
+    "local_review": "low",
+    "repairing_ci": "medium",
+    "resolving_conflict": "high",
+    "addressing_review": "medium"
+  },
+  "reasoningEscalateOnRepeatedFailure": true,
+  "sharedMemoryFiles": [
+    "README.md",
+    "docs/architecture.md",
+    "docs/constitution.md",
+    "docs/workflow.md",
+    "docs/decisions.md"
+  ],
+  "localReviewEnabled": false,
+  "localReviewRoles": [
+    "reviewer",
+    "explorer",
+    "docs_researcher"
+  ],
+  "localReviewArtifactDir": "./.local/reviews",
+  "reviewBotLogins": [
+    "copilot-pull-request-reviewer"
+  ],
+  "humanReviewBlocksMerge": true,
+  "issueJournalRelativePath": ".opencode-supervisor/issue-journal.md",
+  "issueJournalMaxChars": 6000,
+  "issueLabel": "opencode",
+  "skipTitlePrefixes": [],
+  "branchPrefix": "opencode/issue-",
+  "pollIntervalSeconds": 120,
+  "copilotReviewWaitMinutes": 10,
+  "agentExecTimeoutMinutes": 30,
+  "maxAgentAttemptsPerIssue": 30,
+  "timeoutRetryLimit": 2,
+  "blockedVerificationRetryLimit": 3,
+  "sameBlockerRepeatLimit": 2,
+  "sameFailureSignatureRepeatLimit": 3,
+  "cleanupDoneWorkspacesAfterHours": 24,
+  "mergeMethod": "squash",
+  "draftPrAfterAttempt": 1
+}
