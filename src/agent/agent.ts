@@ -18,7 +18,6 @@ import { runCommand } from "../utils/command";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { execSync } from "node:child_process";
 
 // Global task function provided by oh-my-opencode plugin
 declare const task: ((options: AgentTaskOptions) => Promise<{ sessionId: string; output: string; exitCode: number }>) | undefined;
@@ -436,55 +435,13 @@ async function runAgentTurnWithCli(
   }
 }
 
-// Mock mode for testing - just logs what would happen
-async function runMockAgentTurn(
-  config: SupervisorConfig,
-  workspacePath: string,
-  prompt: string,
-  category: AgentCategory,
-  sessionId?: string | null,
-): Promise<AgentTurnResult> {
-  console.log(`\n[MOCK AGENT TURN]`);
-  console.log(`Category: ${category}`);
-  console.log(`Workspace: ${workspacePath}`);
-  console.log(`Session: ${sessionId ?? "new"}`);
-  console.log(`Prompt length: ${prompt.length} chars`);
-  console.log(`\n--- PROMPT PREVIEW (first 500 chars) ---`);
-  console.log(prompt.slice(0, 500));
-  console.log(`... (${prompt.length - 500} more chars)`);
-  console.log(`--- END PREVIEW ---\n`);
-  
-  return {
-    exitCode: 0,
-    sessionId: sessionId ?? `mock-${Date.now()}`,
-    lastMessage: [
-      "Summary: Mock agent completed successfully",
-      "State hint: implementing",
-      "Blocked reason: none",
-      "Tests: No tests run in mock mode",
-      "Failure signature: none",
-      "Next action: Review the mock output and implement real agent execution",
-    ].join("\n"),
-    stderr: "",
-    stdout: "Mock execution completed",
-  };
-}
-
 // Detect available execution method
-function detectExecutionMethod(): "plugin" | "cli" | "mock" {
-  // Check for oh-my-opencode plugin (task function)
+function detectExecutionMethod(): "plugin" | "cli" {
   if (typeof task !== "undefined") {
     return "plugin";
   }
-  
-  // Check if opencode CLI is available in PATH
-  try {
-    execSync("which opencode", { stdio: "ignore" });
-    return "cli";
-  } catch {
-    // opencode CLI not found, fall back to mock mode
-    return "mock";
-  }
+
+  return "cli";
 }
 
 export async function runAgentTurn(
@@ -533,10 +490,5 @@ export async function runAgentTurn(
     case "cli":
       // Use opencode CLI subprocess
       return runAgentTurnWithCli(config, workspacePath, prompt, policy.category, sessionId);
-      
-    case "mock":
-    default:
-      // Mock mode for testing
-      return runMockAgentTurn(config, workspacePath, prompt, policy.category, sessionId);
   }
 }
