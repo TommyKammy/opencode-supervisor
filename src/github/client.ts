@@ -90,6 +90,15 @@ function normalizeRollupChecks(rollup: PullRequestStatusCheckRollupResponse | nu
 export class GitHubClient {
   constructor(private readonly config: SupervisorConfig) {}
 
+  private repoOwnerAndName(): { owner: string; repo: string } {
+    const [owner, repo] = this.config.repoSlug.split("/", 2);
+    if (!owner || !repo) {
+      throw new Error(`Invalid repoSlug: ${this.config.repoSlug}`);
+    }
+
+    return { owner, repo };
+  }
+
   async listAllIssues(): Promise<GitHubIssue[]> {
     const result = await runCommand("gh", [
       "issue",
@@ -117,7 +126,7 @@ export class GitHubClient {
       "--limit",
       "100",
       "--json",
-      "number,title,body,createdAt,updatedAt,url,labels",
+      "number,title,body,createdAt,updatedAt,url,labels,state",
     ];
 
     if (this.config.issueLabel) {
@@ -167,21 +176,24 @@ export class GitHubClient {
 
   async resolvePullRequestForBranch(
     branch: string,
-    prNumber: number | null,
+    trackedPrNumber: number | null,
   ): Promise<GitHubPullRequest | null> {
-    // First try the specific PR number if known
-    if (prNumber !== null) {
-      try {
-        const pr = await this.getPullRequest(prNumber);
-        if (pr.headRefName === branch) {
-          return pr;
-        }
-      } catch {
-        // PR not found or error, continue to search
+    const openPullRequest = await this.findOpenPullRequest(branch);
+    if (openPullRequest) {
+      return openPullRequest;
+    }
+
+    if (trackedPrNumber !== null) {
+      const trackedPullRequest = await this.getPullRequestIfExists(trackedPrNumber);
+      if (trackedPullRequest) {
+        return trackedPullRequest;
       }
     }
 
-    // Search for any PR with this branch
+    return this.findLatestPullRequestForBranch(branch);
+  }
+
+  async findLatestPullRequestForBranch(branch: string): Promise<GitHubPullRequest | null> {
     const result = await runCommand("gh", [
       "pr",
       "list",
@@ -203,6 +215,98 @@ export class GitHubClient {
       return rightTimestamp - leftTimestamp;
     });
     return sorted[0] ?? null;
+  }
+
+  async getPullRequestIfExists(prNumber: number): Promise<GitHubPullRequest | null> {
+    const result = await runCommand(
+      "gh",
+      [
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        this.config.repoSlug,
+        "--json",
+        "number,title,url,state,createdAt,updatedAt,isDraft,reviewDecision,mergeStateStatus,mergeable,headRefName,headRefOid,mergedAt",
+      ],
+      { allowExitCodes: [0, 1] },
+    );
+
+    if (result.exitCode === 0) {
+      return parseJson<GitHubPullRequest>(result.stdout);
+    }
+
+    const stderr = result.stderr.toLowerCase();
+    if (
+      stderr.includes("pull request not found") ||
+      stderr.includes("could not find pull request") ||
+      stderr.includes("no pull requests match")
+    ) {
+      return null;
+    }
+
+    throw new Error(
+      `Failed to get pull request #${prNumber}: ${result.stderr.trim() || `exit code ${result.exitCode}`}`,
+    );
+  }
+
+  async getMergedPullRequestsClosingIssue(issueNumber: number): Promise<GitHubPullRequest[]> {
+    const { owner, repo } = this.repoOwnerAndName();
+    const query = `
+      query($owner: String!, $repo: String!, $number: Int!) {
+        repository(owner: $owner, name: $repo) {
+          issue(number: $number) {
+            closedByPullRequestsReferences(first: 20) {
+              nodes {
+                number
+                title
+                url
+                state
+                createdAt
+                updatedAt
+                isDraft
+                reviewDecision
+                mergeStateStatus
+                mergeable
+                headRefName
+                headRefOid
+                mergedAt
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const result = await runCommand("gh", [
+      "api",
+      "graphql",
+      "-f",
+      `query=${query}`,
+      "-F",
+      `owner=${owner}`,
+      "-F",
+      `repo=${repo}`,
+      "-F",
+      `number=${issueNumber}`,
+    ]);
+
+    const parsed = parseJson<{
+      data?: {
+        repository?: {
+          issue?: {
+            closedByPullRequestsReferences?: {
+              nodes?: GitHubPullRequest[];
+            };
+          };
+        };
+      };
+    }>(result.stdout);
+
+    const pullRequests = parsed.data?.repository?.issue?.closedByPullRequestsReferences?.nodes ?? [];
+    return pullRequests
+      .filter((pullRequest) => Boolean(pullRequest?.mergedAt || pullRequest?.state === "MERGED"))
+      .sort((left, right) => Date.parse(right.mergedAt ?? right.updatedAt ?? right.createdAt) - Date.parse(left.mergedAt ?? left.updatedAt ?? left.createdAt));
   }
 
   async getPullRequest(prNumber: number): Promise<GitHubPullRequest> {
@@ -356,11 +460,24 @@ export class GitHubClient {
     await runCommand("gh", args, { allowExitCodes: [0, 1] });
   }
 
-  async getUnresolvedReviewThreads(prNumber: number): Promise<ReviewThread[]> {
-    const [owner, repo] = this.config.repoSlug.split("/", 2);
-    if (!owner || !repo) {
-      throw new Error(`Invalid repoSlug: ${this.config.repoSlug}`);
+  async closePullRequest(prNumber: number, comment?: string): Promise<void> {
+    const args = [
+      "pr",
+      "close",
+      String(prNumber),
+      "--repo",
+      this.config.repoSlug,
+    ];
+
+    if (comment && comment.trim() !== "") {
+      args.push("--comment", comment);
     }
+
+    await runCommand("gh", args, { allowExitCodes: [0, 1] });
+  }
+
+  async getUnresolvedReviewThreads(prNumber: number): Promise<ReviewThread[]> {
+    const { owner, repo } = this.repoOwnerAndName();
 
     const query = `
       query($owner: String!, $repo: String!, $number: Int!) {
