@@ -310,15 +310,45 @@ export function buildAgentPrompt(input: {
 
 export interface AgentExecutionPolicy {
   category: AgentCategory;
+  model: string;
   reasoningEffort: ReasoningEffort;
 }
 
 const REASONING_ORDER: ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh"];
+const DEFAULT_MODEL = "kimi-for-coding/k2p5";
+const CATEGORY_MODEL_MAP: Record<AgentCategory, string> = {
+  quick: "opencode/gpt-5-nano",
+  deep: "kimi-for-coding/k2p5",
+  ultrabrain: "kimi-for-coding/kimi-k2-thinking",
+  "visual-engineering": "kimi-for-coding/k2p5",
+  "unspecified-high": "kimi-for-coding/k2p5",
+  "unspecified-low": "opencode/gpt-5-nano",
+  writing: "kimi-for-coding/k2p5",
+  artistry: "kimi-for-coding/k2p5",
+};
 
 function bumpReasoningEffort(effort: ReasoningEffort, steps = 1): ReasoningEffort {
   const index = REASONING_ORDER.indexOf(effort);
   const nextIndex = Math.min(REASONING_ORDER.length - 1, Math.max(0, index) + steps);
   return REASONING_ORDER[nextIndex] ?? effort;
+}
+
+function clampReasoningEffortForModel(model: string, effort: ReasoningEffort): ReasoningEffort {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("gpt-5-nano")) {
+    if (effort === "xhigh") {
+      return "high";
+    }
+    if (effort === "none") {
+      return "low";
+    }
+  }
+
+  if (normalized.includes("kimi-k2-thinking") && effort === "none") {
+    return "low";
+  }
+
+  return effort;
 }
 
 export function resolveAgentExecutionPolicy(
@@ -327,6 +357,7 @@ export function resolveAgentExecutionPolicy(
   record?: Pick<IssueRunRecord, "repeated_failure_signature_count" | "blocked_verification_retry_count" | "timeout_retry_count"> | null,
 ): AgentExecutionPolicy {
   const category = config.agentCategoryByState[state] ?? "deep";
+  const model = CATEGORY_MODEL_MAP[category] ?? DEFAULT_MODEL;
   let effort = config.reasoningEffortByState[state] ?? "medium";
 
   if (
@@ -339,7 +370,7 @@ export function resolveAgentExecutionPolicy(
     effort = bumpReasoningEffort(effort, 1);
   }
 
-  return { category, reasoningEffort: effort };
+  return { category, model, reasoningEffort: clampReasoningEffortForModel(model, effort) };
 }
 
 // Run agent turn using opencode CLI as a subprocess
@@ -348,7 +379,7 @@ async function runAgentTurnWithCli(
   config: SupervisorConfig,
   workspacePath: string,
   prompt: string,
-  category: AgentCategory,
+  model: string,
   sessionId?: string | null,
 ): Promise<AgentTurnResult> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-supervisor-"));
@@ -358,24 +389,13 @@ async function runAgentTurnWithCli(
     // Write prompt to file
     await fs.writeFile(promptFile, prompt, "utf8");
     
-    const modelMap: Record<AgentCategory, string> = {
-      quick: "opencode/gpt-5-nano",
-      deep: "kimi-for-coding/k2p5",
-      ultrabrain: "kimi-for-coding/kimi-k2-thinking",
-      "visual-engineering": "kimi-for-coding/k2p5",
-      "unspecified-high": "kimi-for-coding/k2p5",
-      "unspecified-low": "opencode/gpt-5-nano",
-      writing: "kimi-for-coding/k2p5",
-      artistry: "kimi-for-coding/k2p5",
-    };
-    
     // Build opencode CLI command using 'run' subcommand
     const args = [
       "run",
       "--dir", workspacePath,
       "--file", promptFile,
       "--format", "json",
-      "--model", modelMap[category] ?? modelMap.deep,
+      "--model", model,
     ];
     
     if (sessionId) {
@@ -455,7 +475,7 @@ export async function runAgentTurn(
   const policy = resolveAgentExecutionPolicy(config, state, record);
   const method = detectExecutionMethod();
   
-  console.log(`[Agent Execution] Method: ${method}, Category: ${policy.category}, State: ${state}`);
+  console.log(`[Agent Execution] Method: ${method}, Category: ${policy.category}, Model: ${policy.model}, Reasoning: ${policy.reasoningEffort}, State: ${state}`);
   
   switch (method) {
     case "plugin":
@@ -489,6 +509,6 @@ export async function runAgentTurn(
       
     case "cli":
       // Use opencode CLI subprocess
-      return runAgentTurnWithCli(config, workspacePath, prompt, policy.category, sessionId);
+      return runAgentTurnWithCli(config, workspacePath, prompt, policy.model, sessionId);
   }
 }
