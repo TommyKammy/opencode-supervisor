@@ -929,10 +929,16 @@ async function reconcileStaleFailedIssueStates(
   config: SupervisorConfig,
   issues: GitHubIssue[],
 ): Promise<void> {
+  const MAX_RECOVERIES_PER_RUN = 10;
   let changed = false;
+  let recoveredCount = 0;
   const issueStateByNumber = new Map(issues.map((issue) => [issue.number, issue.state ?? null]));
 
   for (const record of Object.values(state.issues)) {
+    if (recoveredCount >= MAX_RECOVERIES_PER_RUN) {
+      break;
+    }
+
     if (record.state !== "failed" || record.pr_number === null) {
       continue;
     }
@@ -966,6 +972,7 @@ async function reconcileStaleFailedIssueStates(
       repeated_failure_signature_count: 0,
       timeout_retry_count: 0,
       blocked_verification_retry_count: 0,
+      // Keep historical attempt_count for observability and per-issue budgeting.
       pr_number: pr.number,
       last_head_sha: pr.headRefOid,
       ...syncReviewWaitWindow(record, pr),
@@ -974,6 +981,7 @@ async function reconcileStaleFailedIssueStates(
     const updated = stateStore.touch(record, patch);
     state.issues[String(record.issue_number)] = updated;
     changed = true;
+    recoveredCount += 1;
   }
 
   if (changed) {
