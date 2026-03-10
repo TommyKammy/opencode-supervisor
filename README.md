@@ -216,6 +216,16 @@ systemctl --user status opencode-supervisor
 journalctl --user -u opencode-supervisor -f
 ```
 
+## launchd Service (macOS)
+
+Install as a user launch agent:
+
+```bash
+./scripts/install-launchd.sh
+launchctl print gui/$(id -u)/io.opencode.supervisor
+tail -f .local/logs/launchd.stdout.log
+```
+
 ## Development
 
 ```bash
