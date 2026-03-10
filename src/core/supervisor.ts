@@ -15,6 +15,7 @@ import {
   BlockedReason,
   CliOptions,
   FailureContext,
+  GitHubIssue,
   GitHubPullRequest,
   IssueRunRecord,
   PullRequestCheck,
@@ -758,36 +759,157 @@ async function cleanupExpiredDoneWorkspaces(
   }
 }
 
+function doneResetPatch(
+  patch: Partial<IssueRunRecord> = {},
+): Partial<IssueRunRecord> {
+  return {
+    state: "done",
+    last_error: null,
+    blocked_reason: null,
+    last_failure_kind: null,
+    last_failure_context: null,
+    last_blocker_signature: null,
+    last_failure_signature: null,
+    timeout_retry_count: 0,
+    blocked_verification_retry_count: 0,
+    repeated_blocker_count: 0,
+    repeated_failure_signature_count: 0,
+    ...patch,
+  };
+}
+
+function needsRecordUpdate(record: IssueRunRecord, patch: Partial<IssueRunRecord>): boolean {
+  for (const [key, value] of Object.entries(patch)) {
+    const recordValue = record[key as keyof IssueRunRecord];
+    if (JSON.stringify(recordValue) !== JSON.stringify(value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function reconcileMergedIssueClosures(
   github: GitHubClient,
   stateStore: StateStore,
   state: SupervisorStateFile,
+  issues: GitHubIssue[],
 ): Promise<void> {
   let changed = false;
+  const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
+
+  for (const record of Object.values(state.issues)) {
+    const issue = issueByNumber.get(record.issue_number);
+    if (!issue || issue.state !== "CLOSED") {
+      continue;
+    }
+
+    // Skip redundant merged-PR lookups for already reconciled done records unless
+    // the GitHub issue changed since this record was last updated.
+    if (record.state === "done" && record.pr_number !== null) {
+      const issueUpdatedAtMs = Date.parse(issue.updatedAt);
+      const recordUpdatedAtMs = Date.parse(record.updated_at);
+      if (
+        Number.isFinite(issueUpdatedAtMs) &&
+        Number.isFinite(recordUpdatedAtMs) &&
+        issueUpdatedAtMs <= recordUpdatedAtMs
+      ) {
+        continue;
+      }
+    }
+
+    const satisfyingPullRequests = await github.getMergedPullRequestsClosingIssue(record.issue_number);
+    const satisfyingPullRequest = satisfyingPullRequests[0] ?? null;
+
+    if (!satisfyingPullRequest) {
+      const patch = doneResetPatch();
+      if (needsRecordUpdate(record, patch)) {
+        const updated = stateStore.touch(record, patch);
+        state.issues[String(record.issue_number)] = updated;
+        if (state.activeIssueNumber === record.issue_number) {
+          state.activeIssueNumber = null;
+        }
+        changed = true;
+      }
+      continue;
+    }
+
+    if (
+      record.pr_number !== null &&
+      record.pr_number !== satisfyingPullRequest.number
+    ) {
+      const trackedPullRequest = await github.getPullRequestIfExists(record.pr_number);
+      if (trackedPullRequest && trackedPullRequest.state === "OPEN" && !trackedPullRequest.mergedAt) {
+        await github.closePullRequest(
+          trackedPullRequest.number,
+          `Closing as superseded because issue #${record.issue_number} was satisfied by merged PR #${satisfyingPullRequest.number}.`,
+        );
+      }
+    }
+
+    const patch = doneResetPatch({
+      pr_number: satisfyingPullRequest.number,
+      last_head_sha: satisfyingPullRequest.headRefOid,
+    });
+    if (needsRecordUpdate(record, patch)) {
+      const updated = stateStore.touch(record, patch);
+      state.issues[String(record.issue_number)] = updated;
+      if (state.activeIssueNumber === record.issue_number) {
+        state.activeIssueNumber = null;
+      }
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await stateStore.save(state);
+  }
+}
+
+async function reconcileTrackedMergedButOpenIssues(
+  github: GitHubClient,
+  stateStore: StateStore,
+  state: SupervisorStateFile,
+  issues: GitHubIssue[],
+): Promise<void> {
+  let changed = false;
+  const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
 
   for (const record of Object.values(state.issues)) {
     if (record.pr_number === null) {
       continue;
     }
 
-    if (record.state !== "done" && record.state !== "merging") {
+    const issue = issueByNumber.get(record.issue_number);
+    if (!issue || issue.state !== "OPEN") {
       continue;
     }
 
-    const pr = await github.getPullRequest(record.pr_number);
-    if (!pr.mergedAt && pr.state !== "MERGED") {
+    const trackedPullRequest = await github.getPullRequestIfExists(record.pr_number);
+    if (!trackedPullRequest || (!trackedPullRequest.mergedAt && trackedPullRequest.state !== "MERGED")) {
       continue;
     }
 
-    const issue = await github.getIssue(record.issue_number);
-    if (issue.state !== "CLOSED") {
-      await github.closeIssue(
-        record.issue_number,
-        `Closed automatically because PR #${record.pr_number} was merged.`,
-      );
+    const mergedAtMs = Date.parse(trackedPullRequest.mergedAt ?? "");
+    const issueUpdatedAtMs = Date.parse(issue.updatedAt);
+    if (
+      !Number.isFinite(mergedAtMs) ||
+      !Number.isFinite(issueUpdatedAtMs) ||
+      issueUpdatedAtMs > mergedAtMs
+    ) {
+      continue;
     }
 
-    const updated = stateStore.touch(record, { state: "done", last_head_sha: pr.headRefOid });
+    await github.closeIssue(
+      record.issue_number,
+      `Closed automatically because tracked PR #${trackedPullRequest.number} was merged.`,
+    );
+
+    const patch = doneResetPatch({
+      pr_number: trackedPullRequest.number,
+      last_head_sha: trackedPullRequest.headRefOid,
+    });
+    const updated = stateStore.touch(record, patch);
     state.issues[String(record.issue_number)] = updated;
     if (state.activeIssueNumber === record.issue_number) {
       state.activeIssueNumber = null;
@@ -987,7 +1109,9 @@ export class Supervisor {
 
   async runOnce(options: Pick<CliOptions, "dryRun">): Promise<string> {
     const state = await this.stateStore.load();
-    await reconcileMergedIssueClosures(this.github, this.stateStore, state);
+    const issues = await this.github.listAllIssues();
+    await reconcileMergedIssueClosures(this.github, this.stateStore, state, issues);
+    await reconcileTrackedMergedButOpenIssues(this.github, this.stateStore, state, issues);
     await reconcileParentEpicClosures(this.github, this.stateStore, state);
     await cleanupExpiredDoneWorkspaces(this.config, state);
 
