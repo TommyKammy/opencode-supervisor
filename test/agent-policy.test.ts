@@ -54,6 +54,19 @@ test("quick category model clamps xhigh reasoning to high", () => {
   assert.equal(policy.reasoningEffort, "high");
 });
 
+test("quick category model clamps none reasoning to low", () => {
+  const config = makeConfig({
+    reasoningEffortByState: {
+      implementing: "none",
+    },
+  });
+  const policy = resolveAgentExecutionPolicy(config, "implementing", null);
+
+  assert.equal(policy.category, "quick");
+  assert.equal(policy.model, "opencode/gpt-5-nano");
+  assert.equal(policy.reasoningEffort, "low");
+});
+
 test("ultrabrain thinking model clamps none reasoning to low", () => {
   const config = makeConfig();
   const policy = resolveAgentExecutionPolicy(config, "resolving_conflict", null);
