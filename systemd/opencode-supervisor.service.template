@@ -1,24 +1,23 @@
 [Unit]
 Description=OpenCode Supervisor - GitHub Issue/PR Automation
-Documentation=https://github.com/yourusername/opencode-supervisor
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=%I
-WorkingDirectory=REPO_ROOT
-Environment=PATH=NODE_BIN_DIR:USER_BIN_DIR:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=USER_HOME
-Environment=CI=1
-ExecStart=NODE_BIN_DIR/node REPO_ROOT/dist/index.js loop
+WorkingDirectory=__ROOT__
+ExecStart=/bin/bash __ROOT__/scripts/run-loop.sh
 Restart=always
-RestartSec=60
-
-# Security hardening
+RestartSec=5
+Environment=PATH=__PATH__
+Environment=NODE_BIN=__NODE__
+Environment=NPM_BIN=__NPM__
+Environment=npm_config_yes=true
+Environment=CI=1
 NoNewPrivileges=true
-ProtectSystem=strict
+PrivateTmp=true
+ProtectSystem=full
 ProtectHome=false
-ReadWritePaths=REPO_ROOT USER_WORKSPACE_ROOT
 
 [Install]
 WantedBy=default.target

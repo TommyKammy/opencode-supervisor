@@ -1,41 +1,38 @@
-#!/bin/bash
-# Install opencode-supervisor as a user systemd service on Linux
-
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+UNIT_TEMPLATE="${ROOT}/systemd/opencode-supervisor.service.template"
+UNIT_TARGET="${HOME}/.config/systemd/user/opencode-supervisor.service"
+LOG_DIR="${ROOT}/.local/logs"
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
+NPM_BIN="${NPM_BIN:-$(command -v npm || true)}"
+PATH_VALUE="${PATH}"
 
-echo "Installing opencode-supervisor systemd service..."
+if [[ -z "${NODE_BIN}" || -z "${NPM_BIN}" ]]; then
+  echo "node and npm must be available on PATH" >&2
+  exit 1
+fi
 
-# Detect paths
-NODE_BIN_DIR="$(dirname "$(which node)")"
-USER_BIN_DIR="${HOME}/.local/bin"
-mkdir -p "${USER_BIN_DIR}"
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'
+}
 
-# Create service file
-SERVICE_FILE="${REPO_ROOT}/systemd/opencode-supervisor.service"
+ROOT_ESCAPED="$(escape_sed_replacement "${ROOT}")"
+PATH_ESCAPED="$(escape_sed_replacement "${PATH_VALUE}")"
+NODE_ESCAPED="$(escape_sed_replacement "${NODE_BIN}")"
+NPM_ESCAPED="$(escape_sed_replacement "${NPM_BIN}")"
+
+mkdir -p "${HOME}/.config/systemd/user" "${LOG_DIR}"
 sed \
-  -e "s|REPO_ROOT|${REPO_ROOT}|g" \
-  -e "s|NODE_BIN_DIR|${NODE_BIN_DIR}|g" \
-  -e "s|USER_BIN_DIR|${USER_BIN_DIR}|g" \
-  -e "s|USER_HOME|${HOME}|g" \
-  -e "s|USER_WORKSPACE_ROOT|${HOME}/opencode-worktrees|g" \
-  "${REPO_ROOT}/systemd/opencode-supervisor.service.template" > "${SERVICE_FILE}"
+  -e "s|__ROOT__|${ROOT_ESCAPED}|g" \
+  -e "s|__PATH__|${PATH_ESCAPED}|g" \
+  -e "s|__NODE__|${NODE_ESCAPED}|g" \
+  -e "s|__NPM__|${NPM_ESCAPED}|g" \
+  "${UNIT_TEMPLATE}" > "${UNIT_TARGET}"
 
-# Install service
-mkdir -p "${HOME}/.config/systemd/user"
-cp "${SERVICE_FILE}" "${HOME}/.config/systemd/user/opencode-supervisor.service"
-
-# Reload and enable
 systemctl --user daemon-reload
-systemctl --user enable opencode-supervisor.service
+systemctl --user enable --now opencode-supervisor.service
 
-echo "Service installed. Start it with:"
-echo "  systemctl --user start opencode-supervisor"
-echo ""
-echo "Check status:"
-echo "  systemctl --user status opencode-supervisor"
-echo ""
-echo "View logs:"
-echo "  journalctl --user -u opencode-supervisor -f"
+echo "Installed and started opencode-supervisor.service"
