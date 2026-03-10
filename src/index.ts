@@ -55,6 +55,7 @@ async function runOnceWithSupervisorLock(
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const supervisor = Supervisor.fromConfig(options.configPath);
+  await supervisor.validateRuntimePrerequisites();
   const pollIntervalMs = supervisor.pollIntervalMs();
 
   if (options.command === "status") {

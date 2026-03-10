@@ -234,11 +234,40 @@ export class GitHubClient {
     );
 
     const trimmed = result.stdout.trim();
-    if (trimmed === "") {
-      return [];
+    if (trimmed !== "") {
+      try {
+        return parseJson<PullRequestCheck[]>(trimmed);
+      } catch {
+        // Fall back to statusCheckRollup when gh pr checks emitted non-JSON or incompatible JSON.
+      }
     }
 
-    return parseJson<PullRequestCheck[]>(trimmed);
+    const fallback = await runCommand(
+      "gh",
+      [
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        this.config.repoSlug,
+        "--json",
+        "statusCheckRollup",
+      ],
+      { allowExitCodes: [0, 1] },
+    );
+
+    const fallbackTrimmed = fallback.stdout.trim();
+    if (fallback.exitCode === 0 && fallbackTrimmed !== "") {
+      return normalizeRollupChecks(parseJson<PullRequestStatusCheckRollupResponse>(fallbackTrimmed));
+    }
+
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Failed to get checks for PR #${prNumber}: ${truncate(result.stderr.trim() || fallback.stderr.trim(), 500) ?? `exit code ${result.exitCode}`}`,
+      );
+    }
+
+    return [];
   }
 
   async createPullRequest(

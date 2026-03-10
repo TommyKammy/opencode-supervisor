@@ -1,10 +1,14 @@
+import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { buildAgentPrompt, extractBlockedReason, extractFailureSignature, extractStateHint, runAgentTurn } from "../agent/agent";
+import { buildAgentPrompt, extractBlockedReason, extractFailureSignature, extractStateHint, resolveAgentExecutionPolicy, runAgentTurn } from "../agent/agent";
 import { loadConfig } from "./config";
 import { GitHubClient } from "../github/client";
 import { findBlockingIssue, findParentIssuesReadyToClose } from "../utils/issue-metadata";
 import { hasMeaningfulJournalHandoff, issueJournalPath, readIssueJournal, syncIssueJournal } from "../persistence/journal";
 import { acquireFileLock, LockHandle } from "../utils/lock";
+import { runCommand } from "../utils/command";
+import { runLocalReview, shouldRunLocalReview } from "./local-review";
 import { syncMemoryArtifacts } from "../memory/artifacts";
 import { StateStore } from "../persistence/state-store";
 import {
@@ -855,6 +859,62 @@ export class Supervisor {
     return new Supervisor(loadConfig(configPath));
   }
 
+  async validateRuntimePrerequisites(): Promise<void> {
+    const failures: string[] = [];
+    const recordFailure = (label: string, error: unknown): void => {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`${label}: ${truncate(message, 300) ?? "unknown error"}`);
+    };
+
+    try {
+      const repoStat = await fs.stat(this.config.repoPath);
+      if (!repoStat.isDirectory()) {
+        throw new Error(`Path is not a directory: ${this.config.repoPath}`);
+      }
+      await fs.access(this.config.repoPath, fsConstants.W_OK);
+      await fs.access(path.join(this.config.repoPath, ".git"));
+    } catch (error) {
+      recordFailure(`repoPath ${this.config.repoPath}`, error);
+    }
+
+    try {
+      await fs.mkdir(this.config.workspaceRoot, { recursive: true });
+      await fs.access(this.config.workspaceRoot, fsConstants.W_OK);
+    } catch (error) {
+      recordFailure(`workspaceRoot ${this.config.workspaceRoot}`, error);
+    }
+
+    try {
+      const stateDir = path.dirname(this.config.stateFile);
+      await fs.mkdir(stateDir, { recursive: true });
+      await fs.access(stateDir, fsConstants.W_OK);
+    } catch (error) {
+      recordFailure(`stateFile directory ${path.dirname(this.config.stateFile)}`, error);
+    }
+
+    try {
+      const ghStatus = await runCommand("gh", ["auth", "status"], { allowExitCodes: [0, 1] });
+      if (ghStatus.exitCode !== 0) {
+        throw new Error(ghStatus.stderr.trim() || "gh auth status failed");
+      }
+    } catch (error) {
+      recordFailure("gh auth status", error);
+    }
+
+    try {
+      const opencodeVersion = await runCommand("opencode", ["--version"], { allowExitCodes: [0, 1] });
+      if (opencodeVersion.exitCode !== 0) {
+        throw new Error(opencodeVersion.stderr.trim() || "opencode --version failed");
+      }
+    } catch (error) {
+      recordFailure("opencode --version", error);
+    }
+
+    if (failures.length > 0) {
+      throw new Error(`Runtime prerequisite checks failed:\n- ${failures.join("\n- ")}`);
+    }
+  }
+
   pollIntervalMs(): number {
     return this.config.pollIntervalSeconds * 1000;
   }
@@ -1420,11 +1480,60 @@ export class Supervisor {
       const refreshedChecks = await this.github.getChecks(pr.number);
       const refreshedReviewThreads = await this.github.getUnresolvedReviewThreads(pr.number);
       const refreshedCheckSummary = summarizeChecks(refreshedChecks);
-      
-      // Note: Local review is disabled for now in opencode version
-      // as it requires multi-agent orchestration that's better handled
-      // by oh-my-opencode's built-in review capabilities
-      
+
+      if (
+        shouldRunLocalReview(this.config, record, refreshedPr) &&
+        !refreshedCheckSummary.hasPending &&
+        !refreshedCheckSummary.hasFailing &&
+        configuredBotReviewThreads(this.config, refreshedReviewThreads).length === 0 &&
+        (!this.config.humanReviewBlocksMerge || manualReviewThreads(this.config, refreshedReviewThreads).length === 0) &&
+        !mergeConflictDetected(refreshedPr) &&
+        !options.dryRun
+      ) {
+        record = this.stateStore.touch(record, { state: "local_review" });
+        state.issues[String(record.issue_number)] = record;
+        await this.stateStore.save(state);
+        await syncJournal(record);
+
+        try {
+          const localReview = await runLocalReview({
+            config: this.config,
+            issue,
+            branch: record.branch,
+            workspacePath,
+            defaultBranch: this.config.defaultBranch,
+            pr: refreshedPr,
+            alwaysReadFiles: memoryArtifacts.alwaysReadFiles,
+            onDemandFiles: memoryArtifacts.onDemandFiles,
+          });
+
+          record = this.stateStore.touch(record, {
+            state: "draft_pr",
+            local_review_head_sha: refreshedPr.headRefOid,
+            local_review_summary_path: localReview.summaryPath,
+            local_review_run_at: localReview.ranAt,
+            local_review_max_severity: localReview.maxSeverity,
+            local_review_findings_count: localReview.findingsCount,
+            last_error: null,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          record = this.stateStore.touch(record, {
+            state: "draft_pr",
+            local_review_head_sha: refreshedPr.headRefOid,
+            local_review_summary_path: null,
+            local_review_run_at: nowIso(),
+            local_review_max_severity: null,
+            local_review_findings_count: 0,
+            last_error: `Local review failed: ${truncate(message, 500) ?? "unknown error"}`,
+          });
+        }
+
+        state.issues[String(record.issue_number)] = record;
+        await this.stateStore.save(state);
+        await syncJournal(record);
+      }
+
       if (
         refreshedPr.isDraft &&
         !refreshedCheckSummary.hasPending &&
@@ -1484,6 +1593,3 @@ export class Supervisor {
     }
   }
 }
-
-// Import for agent execution policy
-import { resolveAgentExecutionPolicy } from "../agent/agent";
