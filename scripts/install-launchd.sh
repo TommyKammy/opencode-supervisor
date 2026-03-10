@@ -20,10 +20,19 @@ escape_sed_replacement() {
   printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'
 }
 
-ROOT_ESCAPED="$(escape_sed_replacement "${ROOT}")"
-PATH_ESCAPED="$(escape_sed_replacement "${PATH_VALUE}")"
-NODE_ESCAPED="$(escape_sed_replacement "${NODE_BIN}")"
-NPM_ESCAPED="$(escape_sed_replacement "${NPM_BIN}")"
+xml_escape() {
+  printf '%s' "$1" \
+    | sed -e 's/&/\&amp;/g' \
+          -e 's/</\&lt;/g' \
+          -e 's/>/\&gt;/g' \
+          -e "s/'/\&apos;/g" \
+          -e 's/"/\&quot;/g'
+}
+
+ROOT_ESCAPED="$(escape_sed_replacement "$(xml_escape "${ROOT}")")"
+PATH_ESCAPED="$(escape_sed_replacement "$(xml_escape "${PATH_VALUE}")")"
+NODE_ESCAPED="$(escape_sed_replacement "$(xml_escape "${NODE_BIN}")")"
+NPM_ESCAPED="$(escape_sed_replacement "$(xml_escape "${NPM_BIN}")")"
 
 mkdir -p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
 sed \
@@ -32,6 +41,10 @@ sed \
   -e "s|__NODE__|${NODE_ESCAPED}|g" \
   -e "s|__NPM__|${NPM_ESCAPED}|g" \
   "${PLIST_TEMPLATE}" > "${PLIST_TARGET}"
+
+if command -v plutil >/dev/null 2>&1; then
+  plutil -lint "${PLIST_TARGET}"
+fi
 
 launchctl bootout "gui/${UID_VALUE}" "${PLIST_TARGET}" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/${UID_VALUE}" "${PLIST_TARGET}"
