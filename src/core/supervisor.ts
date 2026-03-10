@@ -796,11 +796,26 @@ async function reconcileMergedIssueClosures(
   issues: GitHubIssue[],
 ): Promise<void> {
   let changed = false;
-  const issueStateByNumber = new Map(issues.map((issue) => [issue.number, issue.state ?? null]));
+  const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
 
   for (const record of Object.values(state.issues)) {
-    if (issueStateByNumber.get(record.issue_number) !== "CLOSED") {
+    const issue = issueByNumber.get(record.issue_number);
+    if (!issue || issue.state !== "CLOSED") {
       continue;
+    }
+
+    // Skip redundant merged-PR lookups for already reconciled done records unless
+    // the GitHub issue changed since this record was last updated.
+    if (record.state === "done" && record.pr_number !== null) {
+      const issueUpdatedAtMs = Date.parse(issue.updatedAt);
+      const recordUpdatedAtMs = Date.parse(record.updated_at);
+      if (
+        Number.isFinite(issueUpdatedAtMs) &&
+        Number.isFinite(recordUpdatedAtMs) &&
+        issueUpdatedAtMs <= recordUpdatedAtMs
+      ) {
+        continue;
+      }
     }
 
     const satisfyingPullRequests = await github.getMergedPullRequestsClosingIssue(record.issue_number);
