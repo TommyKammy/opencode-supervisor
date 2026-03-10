@@ -55,13 +55,14 @@ async function runOnceWithSupervisorLock(
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const supervisor = Supervisor.fromConfig(options.configPath);
-  await supervisor.validateRuntimePrerequisites();
-  const pollIntervalMs = supervisor.pollIntervalMs();
 
   if (options.command === "status") {
     console.log(await supervisor.status());
     return;
   }
+
+  await supervisor.validateRuntimePrerequisites();
+  const pollIntervalMs = supervisor.pollIntervalMs();
 
   if (options.command === "run-once") {
     console.log(await runOnceWithSupervisorLock(supervisor, "run-once", { dryRun: options.dryRun }));

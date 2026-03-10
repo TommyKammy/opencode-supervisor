@@ -1480,6 +1480,7 @@ export class Supervisor {
       const refreshedChecks = await this.github.getChecks(pr.number);
       const refreshedReviewThreads = await this.github.getUnresolvedReviewThreads(pr.number);
       const refreshedCheckSummary = summarizeChecks(refreshedChecks);
+      let ranLocalReviewThisCycle = false;
 
       if (
         shouldRunLocalReview(this.config, record, refreshedPr) &&
@@ -1490,6 +1491,7 @@ export class Supervisor {
         !mergeConflictDetected(refreshedPr) &&
         !options.dryRun
       ) {
+        ranLocalReviewThisCycle = true;
         record = this.stateStore.touch(record, { state: "local_review" });
         state.issues[String(record.issue_number)] = record;
         await this.stateStore.save(state);
@@ -1536,6 +1538,7 @@ export class Supervisor {
 
       if (
         refreshedPr.isDraft &&
+        !ranLocalReviewThisCycle &&
         !refreshedCheckSummary.hasPending &&
         !refreshedCheckSummary.hasFailing &&
         configuredBotReviewThreads(this.config, refreshedReviewThreads).length === 0 &&
