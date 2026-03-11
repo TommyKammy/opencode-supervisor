@@ -24,6 +24,7 @@ function makeConfig(overrides: Partial<SupervisorConfig> = {}): SupervisorConfig
     localReviewEnabled: false,
     localReviewRoles: ["reviewer"],
     localReviewArtifactDir: "/tmp/reviews",
+    localReviewConfidenceThreshold: 0.7,
     reviewBotLogins: [],
     humanReviewBlocksMerge: true,
     issueJournalRelativePath: ".opencode-supervisor/issue-journal.md",
