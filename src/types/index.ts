@@ -51,6 +51,7 @@ export interface SupervisorConfig {
   localReviewEnabled: boolean;
   localReviewRoles: string[];
   localReviewArtifactDir: string;
+  localReviewConfidenceThreshold: number;
   reviewBotLogins: string[];
   humanReviewBlocksMerge: boolean;
   issueJournalRelativePath: string;

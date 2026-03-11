@@ -5,6 +5,17 @@ import { GitHubIssue, GitHubPullRequest, SupervisorConfig } from "../types";
 import { ensureDir, nowIso, truncate } from "../utils";
 
 export type LocalReviewSeverity = "none" | "low" | "medium" | "high";
+type ActionableSeverity = Exclude<LocalReviewSeverity, "none">;
+
+export interface LocalReviewFinding {
+  title: string;
+  body: string;
+  severity: ActionableSeverity;
+  confidence: number;
+  file: string | null;
+  start: number | null;
+  end: number | null;
+}
 
 export interface LocalReviewResult {
   ranAt: string;
@@ -26,17 +37,117 @@ function reviewDir(config: SupervisorConfig, issueNumber: number): string {
   return path.join(config.localReviewArtifactDir, safeSlug(config.repoSlug), `issue-${issueNumber}`);
 }
 
-function parseFooter(output: string): Pick<LocalReviewResult, "summary" | "findingsCount" | "maxSeverity" | "recommendation"> {
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeSeverity(value: unknown): ActionableSeverity | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return normalized;
+  }
+
+  return null;
+}
+
+function normalizeConfidence(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeFinding(value: unknown): LocalReviewFinding | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const title = typeof record.title === "string" ? normalizeWhitespace(record.title) : "";
+  const body = typeof record.body === "string" ? normalizeWhitespace(record.body) : "";
+  const severity = normalizeSeverity(record.severity);
+  const confidence = normalizeConfidence(record.confidence);
+  if (!title || !body || !severity || confidence === null) {
+    return null;
+  }
+
+  let start =
+    typeof record.start === "number" && Number.isInteger(record.start) && record.start > 0
+      ? record.start
+      : null;
+  let end =
+    typeof record.end === "number" && Number.isInteger(record.end) && record.end > 0
+      ? record.end
+      : start;
+
+  if (start === null && end !== null) {
+    start = end;
+  }
+
+  return {
+    title,
+    body,
+    severity,
+    confidence,
+    file: typeof record.file === "string" && record.file.trim() !== "" ? record.file.trim() : null,
+    start,
+    end,
+  };
+}
+
+function maxSeverity(findings: Pick<LocalReviewFinding, "severity">[]): LocalReviewSeverity {
+  if (findings.some((finding) => finding.severity === "high")) {
+    return "high";
+  }
+  if (findings.some((finding) => finding.severity === "medium")) {
+    return "medium";
+  }
+  if (findings.some((finding) => finding.severity === "low")) {
+    return "low";
+  }
+
+  return "none";
+}
+
+function parseFooter(output: string): {
+  summary: string;
+  reportedFindingsCount: number;
+  maxSeverity: LocalReviewSeverity;
+  recommendation: LocalReviewResult["recommendation"];
+  findings: LocalReviewFinding[];
+  hasStructuredFindingsPayload: boolean;
+} {
   const summaryMatch = output.match(/Review summary:\s*(.+)/i);
   const findingsMatch = output.match(/Findings count:\s*(\d+)/i);
   const severityMatch = output.match(/Max severity:\s*(none|low|medium|high)/i);
   const recommendationMatch = output.match(/Recommendation:\s*(ready|changes_requested)/i);
+  const jsonMatch = output.match(/REVIEW_FINDINGS_JSON_START\s*([\s\S]*?)\s*REVIEW_FINDINGS_JSON_END/i);
+
+  let findings: LocalReviewFinding[] = [];
+  let hasStructuredFindingsPayload = false;
+
+  if (jsonMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]) as Record<string, unknown>;
+      if (Array.isArray(parsed.findings)) {
+        hasStructuredFindingsPayload = true;
+        findings = parsed.findings
+          .map((item) => normalizeFinding(item))
+          .filter((item): item is LocalReviewFinding => item !== null);
+      }
+    } catch {
+      findings = [];
+    }
+  }
 
   return {
     summary: truncate(summaryMatch?.[1]?.trim() ?? "Local review completed without a structured summary.", 500) ?? "",
-    findingsCount: findingsMatch ? Number.parseInt(findingsMatch[1], 10) : 0,
+    reportedFindingsCount: findingsMatch ? Number.parseInt(findingsMatch[1], 10) : 0,
     maxSeverity: (severityMatch?.[1]?.toLowerCase() as LocalReviewSeverity | undefined) ?? "none",
     recommendation: (recommendationMatch?.[1]?.toLowerCase() as "ready" | "changes_requested" | undefined) ?? "unknown",
+    findings,
+    hasStructuredFindingsPayload,
   };
 }
 
@@ -58,6 +169,7 @@ function buildLocalReviewPrompt(args: {
   roles: string[];
   alwaysReadFiles: string[];
   onDemandFiles: string[];
+  confidenceThreshold: number;
 }): string {
   const compareRef = `origin/${args.defaultBranch}...HEAD`;
   const roleList = args.roles.length > 0 ? args.roles.join(", ") : "reviewer, explorer";
@@ -99,6 +211,14 @@ function buildLocalReviewPrompt(args: {
     `- git diff --stat ${compareRef}`,
     `- git diff ${compareRef}`,
     "",
+    "Structured findings format:",
+    `- Treat findings with confidence >= ${args.confidenceThreshold.toFixed(2)} as actionable.`,
+    "- Include all findings in a JSON object between exact markers:",
+    "  REVIEW_FINDINGS_JSON_START",
+    '  {"findings":[{"title":"...","body":"...","severity":"low|medium|high","confidence":0.0,"file":"path","start":1,"end":1}]}',
+    "  REVIEW_FINDINGS_JSON_END",
+    "- Return an empty findings array when there are no actionable findings.",
+    "",
     "Respond with a concise review and end with this exact footer:",
     "Review summary: <short summary>",
     "Findings count: <integer>",
@@ -127,6 +247,7 @@ export async function runLocalReview(args: {
     roles: args.config.localReviewRoles,
     alwaysReadFiles: args.alwaysReadFiles,
     onDemandFiles: args.onDemandFiles,
+    confidenceThreshold: args.config.localReviewConfidenceThreshold,
   });
 
   const result = await runAgentTurn(
@@ -144,7 +265,25 @@ export async function runLocalReview(args: {
     .trim();
   const parsed = parseFooter(rawOutput);
   const degraded = result.exitCode !== 0;
-  const recommendation = degraded ? "unknown" : parsed.recommendation;
+  const actionableFindings = parsed.findings.filter(
+    (finding) => finding.confidence >= args.config.localReviewConfidenceThreshold,
+  );
+  const useThresholdFiltering = parsed.hasStructuredFindingsPayload;
+  const findingsCount = useThresholdFiltering ? actionableFindings.length : parsed.reportedFindingsCount;
+  const effectiveMaxSeverity = useThresholdFiltering ? maxSeverity(actionableFindings) : parsed.maxSeverity;
+  const recommendation = degraded
+    ? "unknown"
+    : useThresholdFiltering
+      ? findingsCount > 0
+        ? "changes_requested"
+        : "ready"
+      : parsed.recommendation;
+  const summary = useThresholdFiltering
+    ? truncate(
+        `${parsed.summary} Actionable findings above confidence ${args.config.localReviewConfidenceThreshold.toFixed(2)}: ${findingsCount}.`,
+        500,
+      ) ?? ""
+    : parsed.summary;
   const ranAt = nowIso();
   const dirPath = reviewDir(args.config, args.issue.number);
   await ensureDir(dirPath);
@@ -162,8 +301,9 @@ export async function runLocalReview(args: {
       `- Branch: ${args.branch}`,
       `- Head SHA: ${args.pr.headRefOid}`,
       `- Ran at: ${ranAt}`,
-      `- Findings: ${parsed.findingsCount}`,
-      `- Max severity: ${parsed.maxSeverity}`,
+      `- Confidence threshold: ${args.config.localReviewConfidenceThreshold.toFixed(2)}`,
+      `- Actionable findings: ${findingsCount}`,
+      `- Max severity: ${effectiveMaxSeverity}`,
       `- Recommendation: ${recommendation}`,
       `- Degraded: ${degraded ? "yes" : "no"}`,
       "",
@@ -182,7 +322,14 @@ export async function runLocalReview(args: {
         branch: args.branch,
         headSha: args.pr.headRefOid,
         ranAt,
-        ...parsed,
+        confidenceThreshold: args.config.localReviewConfidenceThreshold,
+        summary,
+        reportedFindingsCount: parsed.reportedFindingsCount,
+        findingsCount,
+        actionableFindingsCount: findingsCount,
+        maxSeverity: effectiveMaxSeverity,
+        parsedFindings: parsed.findings,
+        actionableFindings,
         recommendation,
         degraded,
       },
@@ -197,7 +344,9 @@ export async function runLocalReview(args: {
     summaryPath,
     findingsPath,
     rawOutput,
-    ...parsed,
+    summary,
+    findingsCount,
+    maxSeverity: effectiveMaxSeverity,
     recommendation,
     degraded,
   };

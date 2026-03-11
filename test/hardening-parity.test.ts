@@ -181,3 +181,43 @@ test("loadConfig parses explicit GSD integration fields and filters planning fil
     },
   );
 });
+
+test("loadConfig defaults localReviewConfidenceThreshold to 0.7", async () => {
+  await withTempConfig(
+    JSON.stringify(BASE_CONFIG),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        localReviewConfidenceThreshold: number;
+      };
+      assert.equal(config.localReviewConfidenceThreshold, 0.7);
+    },
+  );
+});
+
+test("loadConfig keeps valid localReviewConfidenceThreshold and falls back for invalid values", async () => {
+  await withTempConfig(
+    JSON.stringify({
+      ...BASE_CONFIG,
+      localReviewConfidenceThreshold: 0.9,
+    }),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        localReviewConfidenceThreshold: number;
+      };
+      assert.equal(config.localReviewConfidenceThreshold, 0.9);
+    },
+  );
+
+  await withTempConfig(
+    JSON.stringify({
+      ...BASE_CONFIG,
+      localReviewConfidenceThreshold: 1.1,
+    }),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        localReviewConfidenceThreshold: number;
+      };
+      assert.equal(config.localReviewConfidenceThreshold, 0.7);
+    },
+  );
+});
