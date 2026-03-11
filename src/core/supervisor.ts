@@ -52,6 +52,8 @@ function createIssueRecord(config: SupervisorConfig, issueNumber: number): Issue
     local_review_run_at: null,
     local_review_max_severity: null,
     local_review_findings_count: 0,
+    local_review_recommendation: null,
+    local_review_degraded: false,
     attempt_count: 0,
     timeout_retry_count: 0,
     blocked_verification_retry_count: 0,
@@ -417,6 +419,23 @@ function mergeConditionsSatisfied(pr: GitHubPullRequest, checks: PullRequestChec
   );
 }
 
+export function localReviewBlocksReady(
+  record: Pick<
+    IssueRunRecord,
+    "local_review_head_sha" | "local_review_findings_count" | "local_review_recommendation" | "local_review_degraded"
+  >,
+  pr: Pick<GitHubPullRequest, "headRefOid">,
+): boolean {
+  return (
+    record.local_review_head_sha === pr.headRefOid &&
+    (
+      record.local_review_recommendation !== "ready" ||
+      record.local_review_findings_count > 0 ||
+      Boolean(record.local_review_degraded)
+    )
+  );
+}
+
 function blockedReasonFromReviewState(
   config: SupervisorConfig,
   reviewThreads: ReviewThread[],
@@ -520,6 +539,10 @@ function inferStateFromPullRequest(
 
   if (pr.isDraft) {
     return "draft_pr";
+  }
+
+  if (localReviewBlocksReady(record, pr)) {
+    return "pr_open";
   }
 
   if (!copilotReviewGraceExpired(record, pr, config)) {
@@ -693,7 +716,7 @@ function formatDetailedStatus(args: {
     `last_failure_kind=${activeRecord.last_failure_kind ?? "none"}`,
     `last_failure_signature=${activeRecord.last_failure_signature ?? "none"}`,
     `retries timeout=${activeRecord.timeout_retry_count} verification=${activeRecord.blocked_verification_retry_count} same_blocker=${activeRecord.repeated_blocker_count} same_failure_signature=${activeRecord.repeated_failure_signature_count}`,
-    `local_review head=${activeRecord.local_review_head_sha ?? "none"} severity=${activeRecord.local_review_max_severity ?? "none"} findings=${activeRecord.local_review_findings_count} ran_at=${activeRecord.local_review_run_at ?? "none"}`,
+    `local_review head=${activeRecord.local_review_head_sha ?? "none"} severity=${activeRecord.local_review_max_severity ?? "none"} findings=${activeRecord.local_review_findings_count} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} ran_at=${activeRecord.local_review_run_at ?? "none"}`,
   ];
 
   if (activeRecord.last_error) {
@@ -1707,7 +1730,18 @@ export class Supervisor {
             local_review_run_at: localReview.ranAt,
             local_review_max_severity: localReview.maxSeverity,
             local_review_findings_count: localReview.findingsCount,
-            last_error: null,
+            local_review_recommendation: localReview.recommendation,
+            local_review_degraded: localReview.degraded,
+            blocked_reason: localReview.recommendation !== "ready" ? "verification" : null,
+            last_error:
+              localReview.recommendation !== "ready"
+                ? truncate(
+                    localReview.degraded
+                      ? "Local review completed in a degraded state. PR will remain draft until local review succeeds cleanly."
+                      : `Local review requested changes (${localReview.findingsCount} actionable findings). PR will remain draft until the branch is updated and re-reviewed.`,
+                    500,
+                  )
+                : null,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -1718,6 +1752,9 @@ export class Supervisor {
             local_review_run_at: nowIso(),
             local_review_max_severity: null,
             local_review_findings_count: 0,
+            local_review_recommendation: "unknown",
+            local_review_degraded: true,
+            blocked_reason: "verification",
             last_error: `Local review failed: ${truncate(message, 500) ?? "unknown error"}`,
           });
         }
@@ -1735,6 +1772,7 @@ export class Supervisor {
         configuredBotReviewThreads(this.config, refreshedReviewThreads).length === 0 &&
         (!this.config.humanReviewBlocksMerge || manualReviewThreads(this.config, refreshedReviewThreads).length === 0) &&
         !mergeConflictDetected(refreshedPr) &&
+        !localReviewBlocksReady(record, refreshedPr) &&
         !options.dryRun
       ) {
         await this.github.markPullRequestReady(refreshedPr.number);

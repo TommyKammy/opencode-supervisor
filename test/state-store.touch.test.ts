@@ -19,6 +19,8 @@ function makeRecord(): IssueRunRecord {
     local_review_run_at: "2026-03-10T00:01:00.000Z",
     local_review_max_severity: "medium",
     local_review_findings_count: 2,
+    local_review_recommendation: "changes_requested",
+    local_review_degraded: true,
     attempt_count: 3,
     timeout_retry_count: 1,
     blocked_verification_retry_count: 1,
@@ -53,6 +55,8 @@ test("touch preserves existing nullable fields when patch omits keys", () => {
 
   assert.equal(updated.state, "stabilizing");
   assert.equal(updated.local_review_summary_path, record.local_review_summary_path);
+  assert.equal(updated.local_review_recommendation, record.local_review_recommendation);
+  assert.equal(updated.local_review_degraded, record.local_review_degraded);
   assert.equal(updated.blocked_reason, record.blocked_reason);
   assert.equal(updated.last_failure_context?.summary, "failure context");
 });
@@ -63,12 +67,16 @@ test("touch clears nullable fields when patch explicitly sets null", () => {
 
   const updated = store.touch(record, {
     local_review_summary_path: null,
+    local_review_recommendation: null,
+    local_review_degraded: false,
     blocked_reason: null,
     last_failure_context: null,
     last_failure_signature: null,
   });
 
   assert.equal(updated.local_review_summary_path, null);
+  assert.equal(updated.local_review_recommendation, null);
+  assert.equal(updated.local_review_degraded, false);
   assert.equal(updated.blocked_reason, null);
   assert.equal(updated.last_failure_context, null);
   assert.equal(updated.last_failure_signature, null);
