@@ -100,6 +100,11 @@ See `supervisor.config.example.json` for all available options:
 | `issueLabel` | Label to filter issues | `opencode` |
 | `branchPrefix` | Prefix for issue branches | `opencode/issue-` |
 | `agentCategoryByState` | Map states to agent categories | See example |
+| `gsdEnabled` | Enable GSD planning-file guidance in agent prompts/status | `false` |
+| `gsdAutoInstall` | Auto-install GSD skills when enabled | `false` |
+| `gsdInstallScope` | GSD install scope: `global` or `local` | `global` |
+| `gsdCodexConfigDir` | Optional override for Codex config directory used by GSD | unset |
+| `gsdPlanningFiles` | Planning files treated as upstream intent documents | `PROJECT.md, REQUIREMENTS.md, ROADMAP.md, STATE.md` |
 | `pollIntervalSeconds` | Loop interval in seconds | `120` |
 | `maxAgentAttemptsPerIssue` | Max retries per issue | `30` |
 | `maxDoneWorkspaces` | Max retained done workspaces (`<0` disables cap) | `24` |
