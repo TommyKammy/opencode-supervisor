@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildAgentPrompt } from "../src/agent/agent";
+import { ensureGsdInstalled } from "../src/core/gsd";
 import { Supervisor } from "../src/core/supervisor";
 
 const BASE_CONFIG = {
@@ -123,6 +124,105 @@ test("status output includes explicit enabled GSD status details", async () => {
       assert.match(output, /\bscope=local\b/);
       assert.match(output, /\bauto_install=yes\b/);
       assert.match(output, /\bplanning_files=PROJECT\.md,STATE\.md\b/);
+      assert.match(output, /\binstalled=no\b/);
+    },
+  );
+});
+
+test("status output reports installed=yes when required GSD skills are present", async () => {
+  await withTempConfig(
+    {
+      gsdEnabled: true,
+      gsdAutoInstall: true,
+      gsdInstallScope: "local",
+      gsdPlanningFiles: ["PROJECT.md", "STATE.md"],
+    },
+    async (configPath) => {
+      const configDir = path.join(path.dirname(configPath), ".codex");
+      for (const skillName of [
+        "gsd-help",
+        "gsd-new-project",
+        "gsd-discuss-phase",
+        "gsd-plan-phase",
+        "gsd-execute-phase",
+        "gsd-verify-work",
+      ]) {
+        await fs.mkdir(path.join(configDir, "skills", skillName), { recursive: true });
+        await fs.writeFile(path.join(configDir, "skills", skillName, "SKILL.md"), `# ${skillName}\n`, "utf8");
+      }
+
+      const supervisor = Supervisor.fromConfig(configPath);
+      const output = await supervisor.status();
+      assert.match(output, /^gsd=enabled\b/m);
+      assert.match(output, /\binstalled=yes\b/);
+    },
+  );
+});
+
+test("ensureGsdInstalled is a no-op when GSD is disabled", async () => {
+  await withTempConfig(
+    {
+      gsdEnabled: false,
+      gsdAutoInstall: true,
+      gsdInstallScope: "local",
+    },
+    async (configPath) => {
+      const supervisor = Supervisor.fromConfig(configPath);
+      const output = await ensureGsdInstalled(supervisor.config);
+      assert.equal(output, null);
+    },
+  );
+});
+
+test("ensureGsdInstalled installs required skills when enabled and missing", async () => {
+  await withTempConfig(
+    {
+      gsdEnabled: true,
+      gsdAutoInstall: true,
+      gsdInstallScope: "local",
+      gsdPlanningFiles: ["PROJECT.md", "STATE.md"],
+    },
+    async (configPath) => {
+      const supervisor = Supervisor.fromConfig(configPath);
+      const binDir = path.join(path.dirname(configPath), "bin");
+      const fakeNpxPath = path.join(binDir, "npx");
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(
+        fakeNpxPath,
+        [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          "codex_dir=\"\"",
+          "args=(\"$@\")",
+          "for ((i=0; i<${#args[@]}; i++)); do",
+          "  if [[ \"${args[$i]}\" == \"--local\" ]]; then",
+          "    codex_dir=\"$PWD/.codex\"",
+          "  fi",
+          "  if [[ \"${args[$i]}\" == \"--config-dir\" ]]; then",
+          "    codex_dir=\"${args[$((i+1))]}\"",
+          "  fi",
+          "done",
+          "mkdir -p \"$codex_dir/skills\"",
+          "for skill in gsd-help gsd-new-project gsd-discuss-phase gsd-plan-phase gsd-execute-phase gsd-verify-work; do",
+          "  mkdir -p \"$codex_dir/skills/$skill\"",
+          "  printf \"# %s\\n\" \"$skill\" > \"$codex_dir/skills/$skill/SKILL.md\"",
+          "done",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakeNpxPath, 0o755);
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+      try {
+        const installMessage = await ensureGsdInstalled(supervisor.config);
+        assert.match(installMessage ?? "", /Installed GSD Codex skills/);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+
+      const status = await supervisor.status();
+      assert.match(status, /\binstalled=yes\b/);
     },
   );
 });
