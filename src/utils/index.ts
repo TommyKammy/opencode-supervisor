@@ -42,8 +42,37 @@ export async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
   }
 }
 
-export async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
+export async function sleep(ms: number, options?: { signal?: AbortSignal }): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+
+  const signal = options?.signal;
+  if (signal?.aborted) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    let finished = false;
+    const onAbort = (): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function isTerminalState(state: string): boolean {
