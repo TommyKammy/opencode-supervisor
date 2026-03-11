@@ -12,6 +12,7 @@ import { runCommand } from "../utils/command";
 import { runLocalReview, shouldRunLocalReview } from "./local-review";
 import { syncMemoryArtifacts } from "../memory/artifacts";
 import { StateStore } from "../persistence/state-store";
+import { summarizeGsdIntegration } from "./gsd";
 import {
   BlockedReason,
   CliOptions,
@@ -686,7 +687,7 @@ function formatRecentRecord(record: IssueRunRecord | null): string {
   return `#${record.issue_number} state=${record.state} updated_at=${record.updated_at}`;
 }
 
-function formatDetailedStatus(args: {
+export function formatDetailedStatus(args: {
   config: SupervisorConfig;
   activeRecord: IssueRunRecord | null;
   latestRecord: IssueRunRecord | null;
@@ -1184,6 +1185,7 @@ export class Supervisor {
 
   async status(): Promise<string> {
     const state = await this.stateStore.load();
+    const gsdSummary = summarizeGsdIntegration(this.config);
     const activeRecord =
       state.activeIssueNumber !== null ? state.issues[String(state.activeIssueNumber)] ?? null : null;
     let latestRecord: IssueRunRecord | null = null;
@@ -1194,7 +1196,7 @@ export class Supervisor {
     }
 
     if (!activeRecord) {
-      return formatDetailedStatus({
+      return `${gsdSummary}\n${formatDetailedStatus({
         config: this.config,
         activeRecord: null,
         latestRecord,
@@ -1202,7 +1204,7 @@ export class Supervisor {
         pr: null,
         checks: [],
         reviewThreads: [],
-      });
+      })}`;
     }
 
     let pr: GitHubPullRequest | null = null;
@@ -1217,7 +1219,7 @@ export class Supervisor {
       }
     } catch (error) {
         const message = sanitizeStatusValue(error instanceof Error ? error.message : String(error));
-        return `${formatDetailedStatus({
+        return `${gsdSummary}\n${formatDetailedStatus({
           config: this.config,
           activeRecord,
           latestRecord,
@@ -1228,7 +1230,7 @@ export class Supervisor {
       })}\nstatus_warning=${truncate(message, 200)}`;
     }
 
-    return formatDetailedStatus({
+    return `${gsdSummary}\n${formatDetailedStatus({
       config: this.config,
       activeRecord,
       latestRecord,
@@ -1236,7 +1238,7 @@ export class Supervisor {
       pr,
       checks,
       reviewThreads,
-    });
+    })}`;
   }
 
   async runOnce(options: Pick<CliOptions, "dryRun">): Promise<string> {
@@ -1528,6 +1530,8 @@ export class Supervisor {
         failureContext: record.last_failure_context,
         previousSummary: previousAgentSummary,
         previousError,
+        gsdEnabled: this.config.gsdEnabled,
+        gsdPlanningFiles: this.config.gsdPlanningFiles,
         alwaysReadFiles: memoryArtifacts.alwaysReadFiles,
         onDemandMemoryFiles: memoryArtifacts.onDemandFiles,
         category: policy.category,

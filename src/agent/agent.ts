@@ -178,6 +178,8 @@ export function buildAgentPrompt(input: {
   failureContext?: FailureContext | null;
   previousSummary?: string | null;
   previousError?: string | null;
+  gsdEnabled?: boolean;
+  gsdPlanningFiles?: string[];
   category: AgentCategory;
   reasoningEffort: ReasoningEffort;
 }): string {
@@ -270,6 +272,17 @@ export function buildAgentPrompt(input: {
           "- Use the context index to decide whether you need any on-demand durable memory files.",
           "- Do not bulk-read every durable memory file on every turn.",
           "- Treat these files as the durable cross-thread memory shared by agents, CI, and future sessions.",
+        ]
+      : []),
+    ...(input.gsdEnabled
+      ? [
+          "",
+          "GSD collaboration:",
+          "- This repository may contain get-shit-done planning artifacts.",
+          `- Prefer these GSD planning files when requirements are ambiguous: ${input.gsdPlanningFiles?.join(", ") || "none configured"}.`,
+          "- Treat GSD planning files as upstream intent and phase-definition documents.",
+          "- Do not run GSD execution workflows inside this supervisor turn.",
+          "- If a requirement is still unclear after reading the planning docs, record that gap in the issue journal instead of inventing policy.",
         ]
       : []),
     "",

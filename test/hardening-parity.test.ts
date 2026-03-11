@@ -136,3 +136,48 @@ test("loadConfig keeps explicit done-workspace retention boundary values", async
     },
   );
 });
+
+test("loadConfig defaults GSD integration fields to disabled with planning files", async () => {
+  await withTempConfig(
+    JSON.stringify(BASE_CONFIG),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        gsdEnabled: boolean;
+        gsdAutoInstall: boolean;
+        gsdInstallScope: string;
+        gsdPlanningFiles: string[];
+      };
+      assert.equal(config.gsdEnabled, false);
+      assert.equal(config.gsdAutoInstall, false);
+      assert.equal(config.gsdInstallScope, "global");
+      assert.deepEqual(config.gsdPlanningFiles, ["PROJECT.md", "REQUIREMENTS.md", "ROADMAP.md", "STATE.md"]);
+    },
+  );
+});
+
+test("loadConfig parses explicit GSD integration fields and filters planning files", async () => {
+  await withTempConfig(
+    JSON.stringify({
+      ...BASE_CONFIG,
+      gsdEnabled: true,
+      gsdAutoInstall: true,
+      gsdInstallScope: "local",
+      gsdCodexConfigDir: "./.codex",
+      gsdPlanningFiles: ["PROJECT.md", "", 123, "STATE.md"],
+    }),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        gsdEnabled: boolean;
+        gsdAutoInstall: boolean;
+        gsdInstallScope: string;
+        gsdCodexConfigDir?: string;
+        gsdPlanningFiles: string[];
+      };
+      assert.equal(config.gsdEnabled, true);
+      assert.equal(config.gsdAutoInstall, true);
+      assert.equal(config.gsdInstallScope, "local");
+      assert.ok(config.gsdCodexConfigDir?.endsWith(`${path.sep}.codex`));
+      assert.deepEqual(config.gsdPlanningFiles, ["PROJECT.md", "STATE.md"]);
+    },
+  );
+});

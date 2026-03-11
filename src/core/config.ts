@@ -4,6 +4,7 @@ import { AgentCategory, ReasoningEffort, RunState, SupervisorConfig } from "../t
 import { isValidGitRefName, parseJson, resolveMaybeRelative } from "../utils";
 
 const DEFAULT_CONFIG_FILE = "supervisor.config.json";
+const DEFAULT_GSD_PLANNING_FILES = ["PROJECT.md", "REQUIREMENTS.md", "ROADMAP.md", "STATE.md"];
 
 function assertString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
@@ -180,6 +181,25 @@ export function loadConfig(configPath?: string): SupervisorConfig {
     sharedMemoryFiles: Array.isArray(raw.sharedMemoryFiles)
       ? raw.sharedMemoryFiles.filter((value): value is string => typeof value === "string")
       : [],
+    gsdEnabled:
+      typeof raw.gsdEnabled === "boolean"
+        ? raw.gsdEnabled
+        : false,
+    gsdAutoInstall:
+      typeof raw.gsdAutoInstall === "boolean"
+        ? raw.gsdAutoInstall
+        : false,
+    gsdInstallScope:
+      raw.gsdInstallScope === "local" || raw.gsdInstallScope === "global"
+        ? raw.gsdInstallScope
+        : "global",
+    gsdCodexConfigDir:
+      typeof raw.gsdCodexConfigDir === "string" && raw.gsdCodexConfigDir.trim() !== ""
+        ? resolveMaybeRelative(configDir, raw.gsdCodexConfigDir)
+        : undefined,
+    gsdPlanningFiles: Array.isArray(raw.gsdPlanningFiles)
+      ? raw.gsdPlanningFiles.filter((value): value is string => typeof value === "string" && value.trim() !== "")
+      : DEFAULT_GSD_PLANNING_FILES,
     localReviewEnabled:
       typeof raw.localReviewEnabled === "boolean"
         ? raw.localReviewEnabled
