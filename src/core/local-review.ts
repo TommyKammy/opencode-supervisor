@@ -14,6 +14,7 @@ export interface LocalReviewResult {
   findingsCount: number;
   maxSeverity: LocalReviewSeverity;
   recommendation: "ready" | "changes_requested" | "unknown";
+  degraded: boolean;
   rawOutput: string;
 }
 
@@ -142,6 +143,8 @@ export async function runLocalReview(args: {
     .join("\n")
     .trim();
   const parsed = parseFooter(rawOutput);
+  const degraded = result.exitCode !== 0;
+  const recommendation = degraded ? "unknown" : parsed.recommendation;
   const ranAt = nowIso();
   const dirPath = reviewDir(args.config, args.issue.number);
   await ensureDir(dirPath);
@@ -161,7 +164,8 @@ export async function runLocalReview(args: {
       `- Ran at: ${ranAt}`,
       `- Findings: ${parsed.findingsCount}`,
       `- Max severity: ${parsed.maxSeverity}`,
-      `- Recommendation: ${parsed.recommendation}`,
+      `- Recommendation: ${recommendation}`,
+      `- Degraded: ${degraded ? "yes" : "no"}`,
       "",
       rawOutput,
       "",
@@ -179,6 +183,8 @@ export async function runLocalReview(args: {
         headSha: args.pr.headRefOid,
         ranAt,
         ...parsed,
+        recommendation,
+        degraded,
       },
       null,
       2,
@@ -192,5 +198,7 @@ export async function runLocalReview(args: {
     findingsPath,
     rawOutput,
     ...parsed,
+    recommendation,
+    degraded,
   };
 }
