@@ -104,3 +104,35 @@ test("runCommand classifies spawn failures deterministically", async () => {
     },
   );
 });
+
+test("loadConfig defaults done-workspace retention controls", async () => {
+  await withTempConfig(
+    JSON.stringify(BASE_CONFIG),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        maxDoneWorkspaces: number;
+        cleanupDoneWorkspacesAfterHours: number;
+      };
+      assert.equal(config.maxDoneWorkspaces, 24);
+      assert.equal(config.cleanupDoneWorkspacesAfterHours, 24);
+    },
+  );
+});
+
+test("loadConfig keeps explicit done-workspace retention boundary values", async () => {
+  await withTempConfig(
+    JSON.stringify({
+      ...BASE_CONFIG,
+      maxDoneWorkspaces: 0,
+      cleanupDoneWorkspacesAfterHours: -1,
+    }),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        maxDoneWorkspaces: number;
+        cleanupDoneWorkspacesAfterHours: number;
+      };
+      assert.equal(config.maxDoneWorkspaces, 0);
+      assert.equal(config.cleanupDoneWorkspacesAfterHours, -1);
+    },
+  );
+});
