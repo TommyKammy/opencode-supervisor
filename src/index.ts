@@ -77,16 +77,47 @@ async function main(): Promise<void> {
     return;
   }
 
-  while (true) {
-    try {
-      const message = await runOnceWithSupervisorLock(supervisor, "loop", { dryRun: options.dryRun });
-      console.log(`${new Date().toISOString()} ${message}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.stack ?? error.message : String(error);
-      console.error(`${new Date().toISOString()} loop-error ${message}`);
+  const sleepAbortController = new AbortController();
+  let shutdownSignal: NodeJS.Signals | null = null;
+  const onShutdownSignal = (signal: NodeJS.Signals): void => {
+    if (shutdownSignal) {
+      return;
     }
+    shutdownSignal = signal;
+    console.log(`${new Date().toISOString()} loop-shutdown requested via ${signal}; exiting after current cycle`);
+    sleepAbortController.abort();
+  };
+  const sigintHandler = (): void => onShutdownSignal("SIGINT");
+  const sigtermHandler = (): void => onShutdownSignal("SIGTERM");
+  process.on("SIGINT", sigintHandler);
+  process.on("SIGTERM", sigtermHandler);
 
-    await sleep(pollIntervalMs);
+  try {
+    while (true) {
+      try {
+        const message = await runOnceWithSupervisorLock(supervisor, "loop", { dryRun: options.dryRun });
+        console.log(`${new Date().toISOString()} ${message}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.stack ?? error.message : String(error);
+        console.error(`${new Date().toISOString()} loop-error ${message}`);
+      }
+
+      if (shutdownSignal) {
+        break;
+      }
+
+      await sleep(pollIntervalMs, { signal: sleepAbortController.signal });
+      if (shutdownSignal) {
+        break;
+      }
+    }
+  } finally {
+    process.off("SIGINT", sigintHandler);
+    process.off("SIGTERM", sigtermHandler);
+  }
+
+  if (shutdownSignal) {
+    console.log(`${new Date().toISOString()} loop-shutdown complete via ${shutdownSignal}`);
   }
 }
 
