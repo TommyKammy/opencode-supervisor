@@ -1,4 +1,5 @@
 import { Supervisor } from "./core/supervisor";
+import { ensureGsdInstalled } from "./core/gsd";
 import { CliOptions } from "./types";
 import { sleep } from "./utils";
 
@@ -55,6 +56,13 @@ async function runOnceWithSupervisorLock(
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const supervisor = Supervisor.fromConfig(options.configPath);
+
+  if (options.command !== "status") {
+    const installMessage = await ensureGsdInstalled(supervisor.config);
+    if (installMessage) {
+      console.log(installMessage);
+    }
+  }
 
   if (options.command === "status") {
     console.log(await supervisor.status());

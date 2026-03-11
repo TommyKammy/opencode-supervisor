@@ -12,7 +12,7 @@ import { runCommand } from "../utils/command";
 import { runLocalReview, shouldRunLocalReview } from "./local-review";
 import { syncMemoryArtifacts } from "../memory/artifacts";
 import { StateStore } from "../persistence/state-store";
-import { summarizeGsdIntegration } from "./gsd";
+import { describeGsdIntegration } from "./gsd";
 import {
   BlockedReason,
   CliOptions,
@@ -1102,7 +1102,7 @@ export class Supervisor {
   private readonly github: GitHubClient;
   private readonly stateStore: StateStore;
 
-  constructor(private readonly config: SupervisorConfig) {
+  constructor(public readonly config: SupervisorConfig) {
     this.github = new GitHubClient(config);
     this.stateStore = new StateStore(config.stateFile, {
       backend: config.stateBackend,
@@ -1185,7 +1185,7 @@ export class Supervisor {
 
   async status(): Promise<string> {
     const state = await this.stateStore.load();
-    const gsdSummary = summarizeGsdIntegration(this.config);
+    const gsdSummary = await describeGsdIntegration(this.config);
     const activeRecord =
       state.activeIssueNumber !== null ? state.issues[String(state.activeIssueNumber)] ?? null : null;
     let latestRecord: IssueRunRecord | null = null;
