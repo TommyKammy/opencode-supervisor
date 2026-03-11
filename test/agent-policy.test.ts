@@ -38,6 +38,7 @@ function makeConfig(overrides: Partial<SupervisorConfig> = {}): SupervisorConfig
     blockedVerificationRetryLimit: 3,
     sameBlockerRepeatLimit: 2,
     sameFailureSignatureRepeatLimit: 3,
+    maxDoneWorkspaces: 24,
     cleanupDoneWorkspacesAfterHours: 24,
     mergeMethod: "squash",
     draftPrAfterAttempt: 1,

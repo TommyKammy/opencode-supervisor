@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { buildAgentPrompt, extractBlockedReason, extractFailureSignature, extractStateHint, resolveAgentExecutionPolicy, runAgentTurn } from "../agent/agent";
@@ -765,21 +766,63 @@ async function cleanupExpiredDoneWorkspaces(
   config: SupervisorConfig,
   state: SupervisorStateFile,
 ): Promise<void> {
-  if (config.cleanupDoneWorkspacesAfterHours < 0) {
-    return;
-  }
+  const recordsToCleanup = selectDoneWorkspaceCleanupRecords(config, state);
 
-  for (const record of Object.values(state.issues)) {
-    if (record.state !== "done") {
-      continue;
-    }
-
-    if (hoursSince(record.updated_at) < config.cleanupDoneWorkspacesAfterHours) {
-      continue;
-    }
-
+  for (const record of recordsToCleanup) {
     await cleanupWorkspace(config.repoPath, record.workspace, record.branch);
   }
+}
+
+export function selectDoneWorkspaceCleanupRecords(
+  config: SupervisorConfig,
+  state: SupervisorStateFile,
+  options?: {
+    workspaceExists?: (workspacePath: string) => boolean;
+    hoursSinceUpdatedAt?: (updatedAt: string) => number;
+  },
+): IssueRunRecord[] {
+  const workspaceExists =
+    options?.workspaceExists ?? ((workspacePath: string) => fsSync.existsSync(path.join(workspacePath, ".git")));
+  const hoursSinceUpdatedAt = options?.hoursSinceUpdatedAt ?? hoursSince;
+
+  if (config.cleanupDoneWorkspacesAfterHours < 0 && config.maxDoneWorkspaces < 0) {
+    return [];
+  }
+
+  const doneRecords = Object.values(state.issues)
+    .filter((record) => record.state === "done")
+    .sort((left, right) => left.updated_at.localeCompare(right.updated_at));
+
+  const existingDoneRecords = doneRecords.filter((record) => workspaceExists(record.workspace));
+  const recordsToCleanup: IssueRunRecord[] = [];
+  const queuedWorkspaces = new Set<string>();
+
+  if (config.maxDoneWorkspaces >= 0 && existingDoneRecords.length > config.maxDoneWorkspaces) {
+    const overflowCount = existingDoneRecords.length - config.maxDoneWorkspaces;
+    for (const record of existingDoneRecords.slice(0, overflowCount)) {
+      recordsToCleanup.push(record);
+      queuedWorkspaces.add(record.workspace);
+    }
+  }
+
+  if (config.cleanupDoneWorkspacesAfterHours < 0) {
+    return recordsToCleanup;
+  }
+
+  for (const record of doneRecords) {
+    if (queuedWorkspaces.has(record.workspace)) {
+      continue;
+    }
+
+    if (hoursSinceUpdatedAt(record.updated_at) < config.cleanupDoneWorkspacesAfterHours) {
+      continue;
+    }
+
+    recordsToCleanup.push(record);
+    queuedWorkspaces.add(record.workspace);
+  }
+
+  return recordsToCleanup;
 }
 
 function doneResetPatch(

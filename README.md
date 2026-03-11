@@ -102,6 +102,8 @@ See `supervisor.config.example.json` for all available options:
 | `agentCategoryByState` | Map states to agent categories | See example |
 | `pollIntervalSeconds` | Loop interval in seconds | `120` |
 | `maxAgentAttemptsPerIssue` | Max retries per issue | `30` |
+| `maxDoneWorkspaces` | Max retained done workspaces (`<0` disables cap) | `24` |
+| `cleanupDoneWorkspacesAfterHours` | Time-based done workspace cleanup in hours (`<0` disables age cleanup) | `24` |
 | `mergeMethod` | `merge`, `squash`, or `rebase` | `squash` |
 
 ## How It Works
