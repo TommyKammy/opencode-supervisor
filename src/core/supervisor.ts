@@ -154,7 +154,7 @@ function isEligibleForSelection(record: IssueRunRecord | undefined, config: Supe
   return shouldAutoRetryTimeout(record, config) || shouldAutoRetryBlockedVerification(record, config);
 }
 
-function summarizeChecks(checks: PullRequestCheck[]): { allPassing: boolean; hasPending: boolean; hasFailing: boolean } {
+export function summarizeChecks(checks: PullRequestCheck[]): { allPassing: boolean; hasPending: boolean; hasFailing: boolean } {
   if (checks.length === 0) {
     return { allPassing: true, hasPending: false, hasFailing: false };
   }
@@ -167,7 +167,7 @@ function summarizeChecks(checks: PullRequestCheck[]): { allPassing: boolean; has
     if (check.bucket === "pending") {
       hasPending = true;
       allPassing = false;
-    } else if (check.bucket === "fail" || check.bucket === "cancel") {
+    } else if (check.bucket === "fail") {
       hasFailing = true;
       allPassing = false;
     } else if (check.bucket !== "pass" && check.bucket !== "skipping") {
@@ -198,8 +198,8 @@ function inferStateWithoutPullRequest(
   return "stabilizing";
 }
 
-function buildChecksFailureContext(pr: GitHubPullRequest, checks: PullRequestCheck[]): FailureContext | null {
-  const failingChecks = checks.filter((check) => check.bucket === "fail" || check.bucket === "cancel");
+export function buildChecksFailureContext(pr: GitHubPullRequest, checks: PullRequestCheck[]): FailureContext | null {
+  const failingChecks = checks.filter((check) => check.bucket === "fail");
   if (failingChecks.length === 0) {
     return null;
   }
@@ -491,7 +491,7 @@ function copilotReviewGraceExpired(
   return Date.now() - createdAtMs >= config.copilotReviewWaitMinutes * 60_000;
 }
 
-function inferStateFromPullRequest(
+export function inferStateFromPullRequest(
   config: SupervisorConfig,
   record: IssueRunRecord,
   pr: GitHubPullRequest,
