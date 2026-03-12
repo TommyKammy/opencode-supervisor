@@ -171,8 +171,8 @@ test("status output falls back to an informative readiness warning", async () =>
   });
 });
 
-test("formatDetailedStatus shows stale local-review head details", async () => {
-  await withTempSupervisor({}, async (supervisor) => {
+test("formatDetailedStatus shows stale local-review head details for merge gating", async () => {
+  await withTempSupervisor({ localReviewPolicy: "block_merge" }, async (supervisor) => {
     const output = formatDetailedStatus({
       config: supervisor.config,
       activeRecord: createRecord(supervisor.config, {
@@ -193,14 +193,14 @@ test("formatDetailedStatus shows stale local-review head details", async () => {
       reviewThreads: [],
     });
 
-    assert.match(output, /local_review gating=no /);
+    assert.match(output, /local_review gating=no policy=block_merge /);
     assert.match(output, /head=stale reviewed_head_sha=reviewed-sha pr_head_sha=current-pr-sha/);
     assert.match(output, /stalled=no/);
   });
 });
 
 test("formatDetailedStatus shows current gating review and repeat-loop state", async () => {
-  await withTempSupervisor({}, async (supervisor) => {
+  await withTempSupervisor({ localReviewPolicy: "block_merge" }, async (supervisor) => {
     const repeatedCount = supervisor.config.sameFailureSignatureRepeatLimit;
     const output = formatDetailedStatus({
       config: supervisor.config,
@@ -223,7 +223,7 @@ test("formatDetailedStatus shows current gating review and repeat-loop state", a
       reviewThreads: [],
     });
 
-    assert.match(output, /local_review gating=yes /);
+    assert.match(output, /local_review gating=yes policy=block_merge /);
     assert.match(output, /head=current reviewed_head_sha=current-pr-sha pr_head_sha=current-pr-sha/);
     assert.match(output, new RegExp(`repeated=${repeatedCount}`));
     assert.match(output, /stalled=yes/);

@@ -22,6 +22,7 @@ function makeConfig(overrides: Partial<SupervisorConfig> = {}): SupervisorConfig
     reasoningEscalateOnRepeatedFailure: true,
     sharedMemoryFiles: [],
     localReviewEnabled: false,
+    localReviewPolicy: "block_ready",
     localReviewRoles: ["reviewer"],
     localReviewArtifactDir: "/tmp/reviews",
     localReviewConfidenceThreshold: 0.7,

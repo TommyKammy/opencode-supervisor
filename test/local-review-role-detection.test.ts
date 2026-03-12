@@ -23,6 +23,7 @@ function makeConfig(repoPath: string, artifactDir: string, tempDir: string): Sup
     gsdInstallScope: "global",
     gsdPlanningFiles: ["PROJECT.md", "REQUIREMENTS.md", "ROADMAP.md", "STATE.md"],
     localReviewEnabled: true,
+    localReviewPolicy: "block_ready",
     localReviewRoles: [],
     localReviewArtifactDir: artifactDir,
     localReviewConfidenceThreshold: 0.7,

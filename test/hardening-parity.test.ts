@@ -221,3 +221,43 @@ test("loadConfig keeps valid localReviewConfidenceThreshold and falls back for i
     },
   );
 });
+
+test("loadConfig defaults localReviewPolicy to block_ready", async () => {
+  await withTempConfig(
+    JSON.stringify(BASE_CONFIG),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        localReviewPolicy: string;
+      };
+      assert.equal(config.localReviewPolicy, "block_ready");
+    },
+  );
+});
+
+test("loadConfig keeps valid localReviewPolicy and falls back for invalid values", async () => {
+  await withTempConfig(
+    JSON.stringify({
+      ...BASE_CONFIG,
+      localReviewPolicy: "block_merge",
+    }),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        localReviewPolicy: string;
+      };
+      assert.equal(config.localReviewPolicy, "block_merge");
+    },
+  );
+
+  await withTempConfig(
+    JSON.stringify({
+      ...BASE_CONFIG,
+      localReviewPolicy: "not-a-policy",
+    }),
+    (configPath) => {
+      const config = loadConfig(configPath) as unknown as {
+        localReviewPolicy: string;
+      };
+      assert.equal(config.localReviewPolicy, "block_ready");
+    },
+  );
+});

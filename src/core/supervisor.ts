@@ -80,10 +80,15 @@ function createIssueRecord(config: SupervisorConfig, issueNumber: number): Issue
 }
 
 function localReviewHighSeverityNeedsFix(
+  config: SupervisorConfig,
   record: Pick<IssueRunRecord, "local_review_head_sha" | "local_review_verified_max_severity">,
   pr: Pick<GitHubPullRequest, "headRefOid">,
 ): boolean {
-  return record.local_review_head_sha === pr.headRefOid && record.local_review_verified_max_severity === "high";
+  return (
+    config.localReviewPolicy !== "advisory" &&
+    record.local_review_head_sha === pr.headRefOid &&
+    record.local_review_verified_max_severity === "high"
+  );
 }
 
 function localReviewRetryLoopCandidate(
@@ -95,7 +100,7 @@ function localReviewRetryLoopCandidate(
 ): boolean {
   const checkSummary = summarizeChecks(checks);
   return (
-    localReviewHighSeverityNeedsFix(record, pr) &&
+    localReviewHighSeverityNeedsFix(config, record, pr) &&
     !checkSummary.hasFailing &&
     !checkSummary.hasPending &&
     configuredBotReviewThreads(config, reviewThreads).length === 0 &&
@@ -631,6 +636,7 @@ function mergeConditionsSatisfied(pr: GitHubPullRequest, checks: PullRequestChec
 }
 
 export function localReviewBlocksReady(
+  config: SupervisorConfig,
   record: Pick<
     IssueRunRecord,
     | "local_review_head_sha"
@@ -638,9 +644,35 @@ export function localReviewBlocksReady(
     | "local_review_recommendation"
     | "local_review_degraded"
   > & { local_review_verified_max_severity?: IssueRunRecord["local_review_verified_max_severity"] },
-  pr: Pick<GitHubPullRequest, "headRefOid">,
+  pr: Pick<GitHubPullRequest, "headRefOid" | "isDraft">,
 ): boolean {
   return (
+    pr.isDraft &&
+    config.localReviewPolicy === "block_ready" &&
+    record.local_review_head_sha === pr.headRefOid &&
+    (
+      (record.local_review_verified_max_severity === "high" && record.local_review_findings_count > 0) ||
+      record.local_review_recommendation !== "ready" ||
+      record.local_review_findings_count > 0 ||
+      Boolean(record.local_review_degraded)
+    )
+  );
+}
+
+function localReviewBlocksMerge(
+  config: SupervisorConfig,
+  record: Pick<
+    IssueRunRecord,
+    | "local_review_head_sha"
+    | "local_review_findings_count"
+    | "local_review_recommendation"
+    | "local_review_degraded"
+  > & { local_review_verified_max_severity?: IssueRunRecord["local_review_verified_max_severity"] },
+  pr: Pick<GitHubPullRequest, "headRefOid" | "isDraft">,
+): boolean {
+  return (
+    !pr.isDraft &&
+    config.localReviewPolicy === "block_merge" &&
     record.local_review_head_sha === pr.headRefOid &&
     (
       (record.local_review_verified_max_severity === "high" && record.local_review_findings_count > 0) ||
@@ -735,7 +767,7 @@ export function inferStateFromPullRequest(
     return "blocked";
   }
 
-  if (localReviewHighSeverityNeedsFix(record, pr)) {
+  if (localReviewHighSeverityNeedsFix(config, record, pr)) {
     return "local_review_fix";
   }
 
@@ -764,7 +796,7 @@ export function inferStateFromPullRequest(
     return "draft_pr";
   }
 
-  if (localReviewBlocksReady(record, pr)) {
+  if (localReviewBlocksReady(config, record, pr) || localReviewBlocksMerge(config, record, pr)) {
     return "pr_open";
   }
 
@@ -1000,6 +1032,7 @@ function localReviewHeadDetails(
 }
 
 function localReviewIsGating(
+  config: SupervisorConfig,
   record: Pick<
     IssueRunRecord,
     | "local_review_head_sha"
@@ -1014,7 +1047,7 @@ function localReviewIsGating(
     return false;
   }
 
-  return localReviewBlocksReady(record, pr);
+  return localReviewBlocksReady(config, record, pr) || localReviewBlocksMerge(config, record, pr);
 }
 
 export function formatDetailedStatus(args: {
@@ -1037,7 +1070,7 @@ export function formatDetailedStatus(args: {
   }
 
   const localReviewHead = localReviewHeadDetails(activeRecord, pr);
-  const localReviewGating = localReviewIsGating(activeRecord, pr) ? "yes" : "no";
+  const localReviewGating = localReviewIsGating(config, activeRecord, pr) ? "yes" : "no";
   const localReviewStalled =
     pr && localReviewRetryLoopStalled(config, activeRecord, pr, checks, reviewThreads) ? "yes" : "no";
   const lines = [
@@ -1052,7 +1085,7 @@ export function formatDetailedStatus(args: {
     `last_failure_kind=${activeRecord.last_failure_kind ?? "none"}`,
     `last_failure_signature=${activeRecord.last_failure_signature ?? "none"}`,
     `retries timeout=${activeRecord.timeout_retry_count} verification=${activeRecord.blocked_verification_retry_count} same_blocker=${activeRecord.repeated_blocker_count} same_failure_signature=${activeRecord.repeated_failure_signature_count}`,
-    `local_review gating=${localReviewGating} findings=${activeRecord.local_review_findings_count} root_causes=${activeRecord.local_review_root_cause_count} max_severity=${activeRecord.local_review_max_severity ?? "none"} verified_findings=${activeRecord.local_review_verified_findings_count} verified_max_severity=${activeRecord.local_review_verified_max_severity ?? "none"} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} head=${localReviewHead.status} reviewed_head_sha=${localReviewHead.reviewedHeadSha} pr_head_sha=${localReviewHead.prHeadSha} ran_at=${activeRecord.local_review_run_at ?? "none"} signature=${activeRecord.last_local_review_signature ?? "none"} repeated=${activeRecord.repeated_local_review_signature_count} stalled=${localReviewStalled}`,
+    `local_review gating=${localReviewGating} policy=${config.localReviewPolicy} findings=${activeRecord.local_review_findings_count} root_causes=${activeRecord.local_review_root_cause_count} max_severity=${activeRecord.local_review_max_severity ?? "none"} verified_findings=${activeRecord.local_review_verified_findings_count} verified_max_severity=${activeRecord.local_review_verified_max_severity ?? "none"} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} head=${localReviewHead.status} reviewed_head_sha=${localReviewHead.reviewedHeadSha} pr_head_sha=${localReviewHead.prHeadSha} ran_at=${activeRecord.local_review_run_at ?? "none"} signature=${activeRecord.last_local_review_signature ?? "none"} repeated=${activeRecord.repeated_local_review_signature_count} stalled=${localReviewStalled}`,
   ];
 
   if (activeRecord.last_error) {
@@ -2150,7 +2183,7 @@ export class Supervisor {
           const signatureTracking = nextLocalReviewSignatureTracking(record, refreshedPr.headRefOid, actionableSignature);
 
           record = this.stateStore.touch(record, {
-            state: "draft_pr",
+            state: refreshedPr.isDraft ? "draft_pr" : "pr_open",
             local_review_head_sha: refreshedPr.headRefOid,
             local_review_summary_path: localReview.summaryPath,
             local_review_run_at: localReview.ranAt,
@@ -2168,12 +2201,16 @@ export class Supervisor {
                 : null,
             last_error:
               localReview.recommendation !== "ready"
-                ? truncate(
+                  ? truncate(
                     localReview.degraded
-                      ? "Local review completed in a degraded state. PR will remain draft until local review succeeds cleanly."
+                      ? refreshedPr.isDraft
+                        ? "Local review completed in a degraded state. PR will remain draft until local review succeeds cleanly."
+                        : "Local review completed in a degraded state. Merge remains gated until local review succeeds cleanly on the current head."
                       : localReview.verifiedMaxSeverity === "high"
                         ? `Local review found verified high-severity findings (${localReview.findingsCount} actionable findings across ${localReview.rootCauseCount} root cause(s)). A local_review_fix repair pass is required.`
-                        : `Local review requested changes (${localReview.findingsCount} actionable findings across ${localReview.rootCauseCount} root cause(s)). PR will remain draft until the branch is updated and re-reviewed.`,
+                        : refreshedPr.isDraft
+                          ? `Local review requested changes (${localReview.findingsCount} actionable findings across ${localReview.rootCauseCount} root cause(s)). PR will remain draft until the branch is updated and re-reviewed.`
+                          : `Local review requested changes (${localReview.findingsCount} actionable findings across ${localReview.rootCauseCount} root cause(s)). Merge remains gated until the current head is updated and re-reviewed.`,
                     500,
                   )
                 : null,
@@ -2181,7 +2218,7 @@ export class Supervisor {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           record = this.stateStore.touch(record, {
-            state: "draft_pr",
+            state: refreshedPr.isDraft ? "draft_pr" : "pr_open",
             local_review_head_sha: refreshedPr.headRefOid,
             local_review_summary_path: null,
             local_review_run_at: nowIso(),
@@ -2225,7 +2262,7 @@ export class Supervisor {
         configuredBotReviewThreads(this.config, refreshedReviewThreads).length === 0 &&
         (!this.config.humanReviewBlocksMerge || manualReviewThreads(this.config, refreshedReviewThreads).length === 0) &&
         !mergeConflictDetected(refreshedPr) &&
-        !localReviewBlocksReady(record, refreshedPr) &&
+        !localReviewBlocksReady(this.config, record, refreshedPr) &&
         !options.dryRun
       ) {
         await this.github.markPullRequestReady(refreshedPr.number);
@@ -2244,7 +2281,7 @@ export class Supervisor {
       const localReviewFailureContextForState =
         nextState === "blocked" && localReviewRetryLoopStalled(this.config, record, postReadyPr, postReadyChecks, postReadyReviewThreads)
           ? localReviewStallFailureContext(record)
-          : nextState === "local_review_fix" && localReviewHighSeverityNeedsFix(record, postReadyPr)
+          : nextState === "local_review_fix" && localReviewHighSeverityNeedsFix(this.config, record, postReadyPr)
             ? localReviewFailureContext(record)
             : null;
       const effectiveFailureContext = refreshedFailureContext ?? localReviewFailureContextForState;
