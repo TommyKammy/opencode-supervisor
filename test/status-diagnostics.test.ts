@@ -172,7 +172,7 @@ test("status output falls back to an informative readiness warning", async () =>
 });
 
 test("formatDetailedStatus shows stale local-review head details for merge gating", async () => {
-  await withTempSupervisor({ localReviewPolicy: "block_merge" }, async (supervisor) => {
+  await withTempSupervisor({ localReviewEnabled: true, localReviewPolicy: "block_merge" }, async (supervisor) => {
     const output = formatDetailedStatus({
       config: supervisor.config,
       activeRecord: createRecord(supervisor.config, {
@@ -200,7 +200,7 @@ test("formatDetailedStatus shows stale local-review head details for merge gatin
 });
 
 test("formatDetailedStatus shows current gating review and repeat-loop state", async () => {
-  await withTempSupervisor({ localReviewPolicy: "block_merge" }, async (supervisor) => {
+  await withTempSupervisor({ localReviewEnabled: true, localReviewPolicy: "block_merge" }, async (supervisor) => {
     const repeatedCount = supervisor.config.sameFailureSignatureRepeatLimit;
     const output = formatDetailedStatus({
       config: supervisor.config,

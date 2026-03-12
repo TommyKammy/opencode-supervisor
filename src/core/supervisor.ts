@@ -85,6 +85,7 @@ function localReviewHighSeverityNeedsFix(
   pr: Pick<GitHubPullRequest, "headRefOid">,
 ): boolean {
   return (
+    config.localReviewEnabled &&
     config.localReviewPolicy !== "advisory" &&
     record.local_review_head_sha === pr.headRefOid &&
     record.local_review_verified_max_severity === "high"
@@ -647,6 +648,7 @@ export function localReviewBlocksReady(
   pr: Pick<GitHubPullRequest, "headRefOid" | "isDraft">,
 ): boolean {
   return (
+    config.localReviewEnabled &&
     pr.isDraft &&
     config.localReviewPolicy === "block_ready" &&
     record.local_review_head_sha === pr.headRefOid &&
@@ -671,6 +673,7 @@ function localReviewBlocksMerge(
   pr: Pick<GitHubPullRequest, "headRefOid" | "isDraft">,
 ): boolean {
   return (
+    config.localReviewEnabled &&
     !pr.isDraft &&
     config.localReviewPolicy === "block_merge" &&
     record.local_review_head_sha === pr.headRefOid &&

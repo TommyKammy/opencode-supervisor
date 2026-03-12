@@ -192,3 +192,21 @@ test("inferStateFromPullRequest does not treat stale ready-PR review data as fre
 
   assert.equal(inferStateFromPullRequest(createConfig({ localReviewPolicy: "block_merge" }), record, pr, [], []), "ready_to_merge");
 });
+
+test("disabled local review suppresses stale local-review-driven gating and retry states", () => {
+  const config = createConfig({ localReviewEnabled: false, localReviewPolicy: "block_merge" });
+  const record = createRecord({
+    local_review_head_sha: "head456",
+    local_review_findings_count: 2,
+    local_review_recommendation: "changes_requested",
+    local_review_verified_max_severity: "high",
+    local_review_verified_findings_count: 1,
+    repeated_local_review_signature_count: config.sameFailureSignatureRepeatLimit,
+  });
+  const readyPr = createPullRequest({ isDraft: false, headRefOid: "head456" });
+  const draftPr = createPullRequest({ isDraft: true, headRefOid: "head456" });
+
+  assert.equal(localReviewBlocksReady(config, record, draftPr), false);
+  assert.equal(inferStateFromPullRequest(config, record, readyPr, [], []), "ready_to_merge");
+  assert.equal(inferStateFromPullRequest(config, record, draftPr, [], []), "draft_pr");
+});
