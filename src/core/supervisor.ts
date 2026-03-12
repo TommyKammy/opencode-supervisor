@@ -811,6 +811,70 @@ function isOpenPullRequest(pr: GitHubPullRequest | null): pr is GitHubPullReques
   return pr !== null && pr.state === "OPEN" && !pr.mergedAt;
 }
 
+function classifyCandidateIssue(
+  issue: GitHubIssue,
+  issues: GitHubIssue[],
+  config: SupervisorConfig,
+  state: SupervisorStateFile,
+): {
+  blockedBy: string | null;
+  record: IssueRunRecord | null;
+} | null {
+  if (config.skipTitlePrefixes.some((prefix) => issue.title.startsWith(prefix))) {
+    return null;
+  }
+
+  const blockingIssue = findBlockingIssue(issue, issues, state);
+  if (blockingIssue) {
+    return {
+      blockedBy: blockingIssue.reason,
+      record: null,
+    };
+  }
+
+  const existing = state.issues[String(issue.number)];
+  if (!isEligibleForSelection(existing, config)) {
+    return {
+      blockedBy: `local_state:${existing?.state ?? "unknown"}`,
+      record: null,
+    };
+  }
+
+  return {
+    blockedBy: null,
+    record: existing ?? createIssueRecord(config, issue.number),
+  };
+}
+
+async function buildReadinessSummary(
+  github: GitHubClient,
+  config: SupervisorConfig,
+  state: SupervisorStateFile,
+): Promise<string[]> {
+  const issues = await github.listCandidateIssues();
+  const runnable: string[] = [];
+  const blocked: string[] = [];
+
+  for (const issue of issues) {
+    const classification = classifyCandidateIssue(issue, issues, config, state);
+    if (!classification) {
+      continue;
+    }
+
+    if (classification.blockedBy) {
+      blocked.push(`#${issue.number} blocked_by=${classification.blockedBy}`);
+      continue;
+    }
+
+    runnable.push(`#${issue.number}`);
+  }
+
+  return [
+    `runnable_issues=${runnable.length > 0 ? runnable.join(",") : "none"}`,
+    `blocked_issues=${blocked.length > 0 ? blocked.join("; ") : "none"}`,
+  ];
+}
+
 async function selectNextIssue(
   github: GitHubClient,
   config: SupervisorConfig,
@@ -818,20 +882,16 @@ async function selectNextIssue(
 ): Promise<IssueRunRecord | null> {
   const issues = await github.listCandidateIssues();
   for (const issue of issues) {
-    if (config.skipTitlePrefixes.some((prefix) => issue.title.startsWith(prefix))) {
+    const classification = classifyCandidateIssue(issue, issues, config, state);
+    if (!classification) {
       continue;
     }
 
-    if (findBlockingIssue(issue, issues, state)) {
+    if (classification.blockedBy) {
       continue;
     }
 
-    const existing = state.issues[String(issue.number)];
-    if (!isEligibleForSelection(existing, config)) {
-      continue;
-    }
-
-    return existing ?? createIssueRecord(config, issue.number);
+    return classification.record;
   }
 
   return null;
@@ -909,6 +969,54 @@ function formatRecentRecord(record: IssueRunRecord | null): string {
   return `#${record.issue_number} state=${record.state} updated_at=${record.updated_at}`;
 }
 
+function localReviewHeadStatus(
+  record: Pick<IssueRunRecord, "local_review_head_sha">,
+  pr: Pick<GitHubPullRequest, "headRefOid"> | null,
+): "none" | "current" | "stale" | "unknown" {
+  if (!record.local_review_head_sha) {
+    return "none";
+  }
+
+  if (!pr) {
+    return "unknown";
+  }
+
+  return record.local_review_head_sha === pr.headRefOid ? "current" : "stale";
+}
+
+function localReviewHeadDetails(
+  record: Pick<IssueRunRecord, "local_review_head_sha">,
+  pr: Pick<GitHubPullRequest, "headRefOid"> | null,
+): {
+  status: "none" | "current" | "stale" | "unknown";
+  reviewedHeadSha: string;
+  prHeadSha: string;
+} {
+  return {
+    status: localReviewHeadStatus(record, pr),
+    reviewedHeadSha: record.local_review_head_sha ?? "none",
+    prHeadSha: pr?.headRefOid ?? "unknown",
+  };
+}
+
+function localReviewIsGating(
+  record: Pick<
+    IssueRunRecord,
+    | "local_review_head_sha"
+    | "local_review_findings_count"
+    | "local_review_recommendation"
+    | "local_review_degraded"
+    | "local_review_verified_max_severity"
+  >,
+  pr: GitHubPullRequest | null,
+): boolean {
+  if (!pr) {
+    return false;
+  }
+
+  return localReviewBlocksReady(record, pr);
+}
+
 export function formatDetailedStatus(args: {
   config: SupervisorConfig;
   activeRecord: IssueRunRecord | null;
@@ -928,6 +1036,10 @@ export function formatDetailedStatus(args: {
     ].join("\n");
   }
 
+  const localReviewHead = localReviewHeadDetails(activeRecord, pr);
+  const localReviewGating = localReviewIsGating(activeRecord, pr) ? "yes" : "no";
+  const localReviewStalled =
+    pr && localReviewRetryLoopStalled(config, activeRecord, pr, checks, reviewThreads) ? "yes" : "no";
   const lines = [
     `issue=#${activeRecord.issue_number}`,
     `state=${activeRecord.state}`,
@@ -940,7 +1052,7 @@ export function formatDetailedStatus(args: {
     `last_failure_kind=${activeRecord.last_failure_kind ?? "none"}`,
     `last_failure_signature=${activeRecord.last_failure_signature ?? "none"}`,
     `retries timeout=${activeRecord.timeout_retry_count} verification=${activeRecord.blocked_verification_retry_count} same_blocker=${activeRecord.repeated_blocker_count} same_failure_signature=${activeRecord.repeated_failure_signature_count}`,
-    `local_review head=${activeRecord.local_review_head_sha ?? "none"} severity=${activeRecord.local_review_max_severity ?? "none"} findings=${activeRecord.local_review_findings_count} root_causes=${activeRecord.local_review_root_cause_count} verified_findings=${activeRecord.local_review_verified_findings_count} verified_max_severity=${activeRecord.local_review_verified_max_severity ?? "none"} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} signature=${activeRecord.last_local_review_signature ?? "none"} repeated=${activeRecord.repeated_local_review_signature_count} ran_at=${activeRecord.local_review_run_at ?? "none"}`,
+    `local_review gating=${localReviewGating} findings=${activeRecord.local_review_findings_count} root_causes=${activeRecord.local_review_root_cause_count} max_severity=${activeRecord.local_review_max_severity ?? "none"} verified_findings=${activeRecord.local_review_verified_findings_count} verified_max_severity=${activeRecord.local_review_verified_max_severity ?? "none"} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} head=${localReviewHead.status} reviewed_head_sha=${localReviewHead.reviewedHeadSha} pr_head_sha=${localReviewHead.prHeadSha} ran_at=${activeRecord.local_review_run_at ?? "none"} signature=${activeRecord.last_local_review_signature ?? "none"} repeated=${activeRecord.repeated_local_review_signature_count} stalled=${localReviewStalled}`,
   ];
 
   if (activeRecord.last_error) {
@@ -1439,7 +1551,7 @@ export class Supervisor {
     }
 
     if (!activeRecord) {
-      return `${gsdSummary}\n${formatDetailedStatus({
+      const baseStatus = formatDetailedStatus({
         config: this.config,
         activeRecord: null,
         latestRecord,
@@ -1447,7 +1559,14 @@ export class Supervisor {
         pr: null,
         checks: [],
         reviewThreads: [],
-      })}`;
+      });
+      try {
+        const readinessLines = await buildReadinessSummary(this.github, this.config, state);
+        return `${gsdSummary}\n${baseStatus}\n${readinessLines.join("\n")}`;
+      } catch (error) {
+        const message = sanitizeStatusValue(error instanceof Error ? error.message : String(error)) ?? "unknown";
+        return `${gsdSummary}\n${baseStatus}\nreadiness_warning=${truncate(message, 200)}`;
+      }
     }
 
     let pr: GitHubPullRequest | null = null;
