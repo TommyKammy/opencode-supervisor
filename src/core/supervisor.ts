@@ -811,6 +811,41 @@ function isOpenPullRequest(pr: GitHubPullRequest | null): pr is GitHubPullReques
   return pr !== null && pr.state === "OPEN" && !pr.mergedAt;
 }
 
+function classifyCandidateIssue(
+  issue: GitHubIssue,
+  issues: GitHubIssue[],
+  config: SupervisorConfig,
+  state: SupervisorStateFile,
+): {
+  blockedBy: string | null;
+  record: IssueRunRecord | null;
+} | null {
+  if (config.skipTitlePrefixes.some((prefix) => issue.title.startsWith(prefix))) {
+    return null;
+  }
+
+  const blockingIssue = findBlockingIssue(issue, issues, state);
+  if (blockingIssue) {
+    return {
+      blockedBy: blockingIssue.reason,
+      record: null,
+    };
+  }
+
+  const existing = state.issues[String(issue.number)];
+  if (!isEligibleForSelection(existing, config)) {
+    return {
+      blockedBy: `local_state:${existing?.state ?? "unknown"}`,
+      record: null,
+    };
+  }
+
+  return {
+    blockedBy: null,
+    record: existing ?? createIssueRecord(config, issue.number),
+  };
+}
+
 async function buildReadinessSummary(
   github: GitHubClient,
   config: SupervisorConfig,
@@ -821,19 +856,13 @@ async function buildReadinessSummary(
   const blocked: string[] = [];
 
   for (const issue of issues) {
-    if (config.skipTitlePrefixes.some((prefix) => issue.title.startsWith(prefix))) {
+    const classification = classifyCandidateIssue(issue, issues, config, state);
+    if (!classification) {
       continue;
     }
 
-    const blockingIssue = findBlockingIssue(issue, issues, state);
-    if (blockingIssue) {
-      blocked.push(`#${issue.number} blocked_by=${blockingIssue.reason}`);
-      continue;
-    }
-
-    const existing = state.issues[String(issue.number)];
-    if (!isEligibleForSelection(existing, config)) {
-      blocked.push(`#${issue.number} blocked_by=local_state:${existing?.state ?? "unknown"}`);
+    if (classification.blockedBy) {
+      blocked.push(`#${issue.number} blocked_by=${classification.blockedBy}`);
       continue;
     }
 
@@ -853,20 +882,16 @@ async function selectNextIssue(
 ): Promise<IssueRunRecord | null> {
   const issues = await github.listCandidateIssues();
   for (const issue of issues) {
-    if (config.skipTitlePrefixes.some((prefix) => issue.title.startsWith(prefix))) {
+    const classification = classifyCandidateIssue(issue, issues, config, state);
+    if (!classification) {
       continue;
     }
 
-    if (findBlockingIssue(issue, issues, state)) {
+    if (classification.blockedBy) {
       continue;
     }
 
-    const existing = state.issues[String(issue.number)];
-    if (!isEligibleForSelection(existing, config)) {
-      continue;
-    }
-
-    return existing ?? createIssueRecord(config, issue.number);
+    return classification.record;
   }
 
   return null;
@@ -1539,7 +1564,7 @@ export class Supervisor {
         const readinessLines = await buildReadinessSummary(this.github, this.config, state);
         return `${gsdSummary}\n${baseStatus}\n${readinessLines.join("\n")}`;
       } catch (error) {
-        const message = sanitizeStatusValue(error instanceof Error ? error.message : String(error));
+        const message = sanitizeStatusValue(error instanceof Error ? error.message : String(error)) ?? "unknown";
         return `${gsdSummary}\n${baseStatus}\nreadiness_warning=${truncate(message, 200)}`;
       }
     }

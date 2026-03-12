@@ -104,7 +104,7 @@ function createPullRequest(headRefOid: string): GitHubPullRequest {
 
 test("status output includes readiness summary lines when idle", async () => {
   await withTempSupervisor({}, async (supervisor) => {
-    await supervisor.stateStore.save({
+    await (supervisor as any).stateStore.save({
       activeIssueNumber: null,
       issues: {
         "3": createRecord(supervisor.config, {
@@ -117,7 +117,7 @@ test("status output includes readiness summary lines when idle", async () => {
       },
     });
 
-    const github = supervisor.github as {
+    const github = (supervisor as any).github as {
       listCandidateIssues: () => Promise<Array<{ number: number; title: string; body: string; createdAt: string; updatedAt: string; url: string; state: string }>>;
     };
     github.listCandidateIssues = async () => [
@@ -154,6 +154,20 @@ test("status output includes readiness summary lines when idle", async () => {
     assert.match(output, /^No active issue\.$/m);
     assert.match(output, /^runnable_issues=#1$/m);
     assert.match(output, /^blocked_issues=#2 blocked_by=depends on #1; #3 blocked_by=local_state:done$/m);
+  });
+});
+
+test("status output falls back to an informative readiness warning", async () => {
+  await withTempSupervisor({}, async (supervisor) => {
+    const github = (supervisor as any).github as {
+      listCandidateIssues: () => Promise<never>;
+    };
+    github.listCandidateIssues = async () => {
+      throw new Error("");
+    };
+
+    const output = await supervisor.status();
+    assert.match(output, /^readiness_warning=unknown$/m);
   });
 });
 
