@@ -37,6 +37,7 @@ coverage/
 
 # Supervisor local data (user-specific)
 .local/
+.codex-supervisor/
 state.json
 *.sqlite
 *.db
