@@ -623,14 +623,13 @@ export function localReviewBlocksReady(
     | "local_review_findings_count"
     | "local_review_recommendation"
     | "local_review_degraded"
-    | "local_review_verified_max_severity"
-  >,
+  > & { local_review_verified_max_severity?: IssueRunRecord["local_review_verified_max_severity"] },
   pr: Pick<GitHubPullRequest, "headRefOid">,
 ): boolean {
   return (
     record.local_review_head_sha === pr.headRefOid &&
     (
-      record.local_review_verified_max_severity === "high" ||
+      (record.local_review_verified_max_severity === "high" && record.local_review_findings_count > 0) ||
       record.local_review_recommendation !== "ready" ||
       record.local_review_findings_count > 0 ||
       Boolean(record.local_review_degraded)
@@ -2088,16 +2087,32 @@ export class Supervisor {
         postReadyReviewThreads,
       );
       const refreshedFailureContext = inferFailureContext(this.config, record, postReadyPr, postReadyChecks, postReadyReviewThreads);
+      const localReviewFailureContextForState =
+        nextState === "blocked" && localReviewRetryLoopStalled(this.config, record, postReadyPr, postReadyChecks, postReadyReviewThreads)
+          ? localReviewStallFailureContext(record)
+          : nextState === "local_review_fix" && localReviewHighSeverityNeedsFix(record, postReadyPr)
+            ? localReviewFailureContext(record)
+            : null;
+      const effectiveFailureContext = refreshedFailureContext ?? localReviewFailureContextForState;
       const refreshedReviewWaitPatch = syncReviewWaitWindow(record, postReadyPr);
       record = this.stateStore.touch(record, {
         pr_number: postReadyPr.number,
         ...refreshedReviewWaitPatch,
         state: nextState,
         last_head_sha: postReadyPr.headRefOid,
-        last_error: nextState === "blocked" && refreshedFailureContext ? truncate(refreshedFailureContext.summary, 1000) : record.last_error,
-        last_failure_context: refreshedFailureContext,
-        ...applyFailureSignature(record, refreshedFailureContext),
-        blocked_reason: nextState === "blocked" ? blockedReasonFromReviewState(this.config, postReadyReviewThreads) : null,
+        last_error:
+          (nextState === "blocked" || nextState === "local_review_fix") && effectiveFailureContext
+            ? truncate(effectiveFailureContext.summary, 1000)
+            : record.last_error,
+        last_failure_context: effectiveFailureContext,
+        ...applyFailureSignature(record, effectiveFailureContext),
+        blocked_reason:
+          nextState === "blocked"
+            ? blockedReasonFromReviewState(this.config, postReadyReviewThreads) ??
+              (localReviewRetryLoopStalled(this.config, record, postReadyPr, postReadyChecks, postReadyReviewThreads)
+                ? "verification"
+                : null)
+            : null,
       });
       state.issues[String(record.issue_number)] = record;
 

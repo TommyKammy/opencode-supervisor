@@ -66,8 +66,13 @@ function createRecord(overrides: Partial<IssueRunRecord> = {}): IssueRunRecord {
     local_review_run_at: "2026-03-12T00:00:00Z",
     local_review_max_severity: "high",
     local_review_findings_count: 3,
+    local_review_root_cause_count: 1,
+    local_review_verified_max_severity: null,
+    local_review_verified_findings_count: 0,
     local_review_recommendation: "changes_requested",
     local_review_degraded: false,
+    last_local_review_signature: null,
+    repeated_local_review_signature_count: 0,
     attempt_count: 1,
     timeout_retry_count: 0,
     blocked_verification_retry_count: 0,
@@ -113,11 +118,10 @@ test("extractStateHint accepts local_review_fix", () => {
 test("inferStateFromPullRequest routes verified severe local review findings into local_review_fix", () => {
   const config = createConfig();
   const record = createRecord({
-    // Parity gap: current opencode-supervisor record shape cannot track verifier-confirmed severity.
     local_review_verified_max_severity: "high",
     local_review_verified_findings_count: 1,
     repeated_local_review_signature_count: 1,
-  } as Partial<IssueRunRecord>);
+  });
   const pr = createPullRequest();
 
   assert.equal(inferStateFromPullRequest(config, record, pr, [], []), "local_review_fix");
@@ -126,11 +130,11 @@ test("inferStateFromPullRequest routes verified severe local review findings int
 test("inferStateFromPullRequest blocks stalled repeated local_review_fix loops on identical blockers", () => {
   const config = createConfig({ sameFailureSignatureRepeatLimit: 3 });
   const record = createRecord({
-    state: "local_review_fix" as IssueRunRecord["state"],
+    state: "local_review_fix",
     local_review_verified_max_severity: "high",
     local_review_verified_findings_count: 1,
     repeated_local_review_signature_count: 3,
-  } as Partial<IssueRunRecord>);
+  });
   const pr = createPullRequest();
 
   assert.equal(inferStateFromPullRequest(config, record, pr, [], []), "blocked");
