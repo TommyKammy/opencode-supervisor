@@ -30,8 +30,13 @@ function normalizeIssueRecord(value: IssueRunRecord): IssueRunRecord {
     local_review_run_at: value.local_review_run_at ?? null,
     local_review_max_severity: value.local_review_max_severity ?? null,
     local_review_findings_count: value.local_review_findings_count ?? 0,
+    local_review_root_cause_count: value.local_review_root_cause_count ?? 0,
+    local_review_verified_max_severity: value.local_review_verified_max_severity ?? null,
+    local_review_verified_findings_count: value.local_review_verified_findings_count ?? 0,
     local_review_recommendation: value.local_review_recommendation ?? null,
     local_review_degraded: value.local_review_degraded ?? false,
+    last_local_review_signature: value.last_local_review_signature ?? null,
+    repeated_local_review_signature_count: value.repeated_local_review_signature_count ?? 0,
     timeout_retry_count: value.timeout_retry_count ?? 0,
     blocked_verification_retry_count: value.blocked_verification_retry_count ?? 0,
     repeated_blocker_count: value.repeated_blocker_count ?? 0,
@@ -148,6 +153,14 @@ export class StateStore {
       local_review_max_severity:
         hasOwn(patch, "local_review_max_severity") ? patch.local_review_max_severity ?? null : record.local_review_max_severity ?? null,
       local_review_findings_count: patch.local_review_findings_count ?? record.local_review_findings_count ?? 0,
+      local_review_root_cause_count:
+        patch.local_review_root_cause_count ?? record.local_review_root_cause_count ?? 0,
+      local_review_verified_max_severity:
+        hasOwn(patch, "local_review_verified_max_severity")
+          ? patch.local_review_verified_max_severity ?? null
+          : record.local_review_verified_max_severity ?? null,
+      local_review_verified_findings_count:
+        patch.local_review_verified_findings_count ?? record.local_review_verified_findings_count ?? 0,
       local_review_recommendation:
         hasOwn(patch, "local_review_recommendation")
           ? patch.local_review_recommendation ?? null
@@ -156,6 +169,12 @@ export class StateStore {
         hasOwn(patch, "local_review_degraded")
           ? patch.local_review_degraded ?? false
           : record.local_review_degraded ?? false,
+      last_local_review_signature:
+        hasOwn(patch, "last_local_review_signature")
+          ? patch.last_local_review_signature ?? null
+          : record.last_local_review_signature ?? null,
+      repeated_local_review_signature_count:
+        patch.repeated_local_review_signature_count ?? record.repeated_local_review_signature_count ?? 0,
       timeout_retry_count: patch.timeout_retry_count ?? record.timeout_retry_count ?? 0,
       blocked_verification_retry_count:
         patch.blocked_verification_retry_count ?? record.blocked_verification_retry_count ?? 0,

@@ -54,8 +54,13 @@ function createIssueRecord(config: SupervisorConfig, issueNumber: number): Issue
     local_review_run_at: null,
     local_review_max_severity: null,
     local_review_findings_count: 0,
+    local_review_root_cause_count: 0,
+    local_review_verified_max_severity: null,
+    local_review_verified_findings_count: 0,
     local_review_recommendation: null,
     local_review_degraded: false,
+    last_local_review_signature: null,
+    repeated_local_review_signature_count: 0,
     attempt_count: 0,
     timeout_retry_count: 0,
     blocked_verification_retry_count: 0,
@@ -72,6 +77,196 @@ function createIssueRecord(config: SupervisorConfig, issueNumber: number): Issue
     processed_review_thread_ids: [],
     updated_at: nowIso(),
   };
+}
+
+function localReviewHighSeverityNeedsFix(
+  record: Pick<IssueRunRecord, "local_review_head_sha" | "local_review_verified_max_severity">,
+  pr: Pick<GitHubPullRequest, "headRefOid">,
+): boolean {
+  return record.local_review_head_sha === pr.headRefOid && record.local_review_verified_max_severity === "high";
+}
+
+function localReviewRetryLoopCandidate(
+  config: SupervisorConfig,
+  record: Pick<IssueRunRecord, "local_review_head_sha" | "local_review_verified_max_severity">,
+  pr: GitHubPullRequest,
+  checks: PullRequestCheck[],
+  reviewThreads: ReviewThread[],
+): boolean {
+  const checkSummary = summarizeChecks(checks);
+  return (
+    localReviewHighSeverityNeedsFix(record, pr) &&
+    !checkSummary.hasFailing &&
+    !checkSummary.hasPending &&
+    configuredBotReviewThreads(config, reviewThreads).length === 0 &&
+    (!config.humanReviewBlocksMerge || manualReviewThreads(config, reviewThreads).length === 0) &&
+    !mergeConflictDetected(pr)
+  );
+}
+
+function localReviewRetryLoopStalled(
+  config: SupervisorConfig,
+  record: Pick<
+    IssueRunRecord,
+    "local_review_head_sha" | "local_review_verified_max_severity" | "repeated_local_review_signature_count"
+  >,
+  pr: GitHubPullRequest,
+  checks: PullRequestCheck[],
+  reviewThreads: ReviewThread[],
+): boolean {
+  return (
+    localReviewRetryLoopCandidate(config, record, pr, checks, reviewThreads) &&
+    record.repeated_local_review_signature_count >= config.sameFailureSignatureRepeatLimit
+  );
+}
+
+function localReviewFailureSummary(
+  record: Pick<
+    IssueRunRecord,
+    | "local_review_findings_count"
+    | "local_review_root_cause_count"
+    | "local_review_max_severity"
+    | "local_review_verified_findings_count"
+    | "local_review_verified_max_severity"
+    | "local_review_degraded"
+  >,
+): string {
+  if (record.local_review_degraded) {
+    return "Local review completed in a degraded state.";
+  }
+
+  return `Local review found ${record.local_review_findings_count} actionable finding(s) across ${record.local_review_root_cause_count} root cause(s); max severity=${record.local_review_max_severity ?? "unknown"}; verified high-severity findings=${record.local_review_verified_findings_count}; verified max severity=${record.local_review_verified_max_severity ?? "none"}.`;
+}
+
+function localReviewFailureContext(
+  record: Pick<
+    IssueRunRecord,
+    | "local_review_findings_count"
+    | "local_review_root_cause_count"
+    | "local_review_max_severity"
+    | "local_review_verified_findings_count"
+    | "local_review_verified_max_severity"
+    | "local_review_degraded"
+    | "local_review_summary_path"
+  >,
+): FailureContext {
+  return {
+    category: "blocked",
+    summary: localReviewFailureSummary(record),
+    signature: `local-review:${record.local_review_max_severity ?? "unknown"}:${record.local_review_verified_max_severity ?? "none"}:${record.local_review_root_cause_count}:${record.local_review_verified_findings_count}:${record.local_review_degraded ? "degraded" : "clean"}`,
+    command: null,
+    details: [
+      `findings=${record.local_review_findings_count}`,
+      `root_causes=${record.local_review_root_cause_count}`,
+      record.local_review_summary_path ? `summary=${record.local_review_summary_path}` : "summary=none",
+    ],
+    url: null,
+    updated_at: nowIso(),
+  };
+}
+
+function localReviewStallFailureContext(
+  record: Pick<
+    IssueRunRecord,
+    | "local_review_findings_count"
+    | "local_review_root_cause_count"
+    | "local_review_max_severity"
+    | "local_review_verified_findings_count"
+    | "local_review_verified_max_severity"
+    | "local_review_degraded"
+    | "local_review_summary_path"
+    | "repeated_local_review_signature_count"
+  >,
+): FailureContext {
+  return {
+    ...localReviewFailureContext(record),
+    summary:
+      `Local review findings repeated without code changes ${record.repeated_local_review_signature_count} times; manual intervention is required.`,
+    signature:
+      `local-review-stalled:${record.local_review_max_severity ?? "unknown"}:` +
+      `${record.local_review_root_cause_count}:${record.local_review_degraded ? "degraded" : "clean"}`,
+    details: [
+      `findings=${record.local_review_findings_count}`,
+      `root_causes=${record.local_review_root_cause_count}`,
+      `repeated_local_review_signature_count=${record.repeated_local_review_signature_count}`,
+      record.local_review_summary_path ? `summary=${record.local_review_summary_path}` : "summary=none",
+    ],
+  };
+}
+
+function nextLocalReviewSignatureTracking(
+  record: Pick<IssueRunRecord, "local_review_head_sha" | "last_local_review_signature" | "repeated_local_review_signature_count">,
+  prHeadSha: string,
+  actionableSignature: string | null,
+): Pick<IssueRunRecord, "last_local_review_signature" | "repeated_local_review_signature_count"> {
+  if (!actionableSignature) {
+    return {
+      last_local_review_signature: null,
+      repeated_local_review_signature_count: 0,
+    };
+  }
+
+  const sameHead = record.local_review_head_sha === prHeadSha;
+  const sameSignature = record.last_local_review_signature === actionableSignature;
+  return {
+    last_local_review_signature: actionableSignature,
+    repeated_local_review_signature_count:
+      sameHead && sameSignature ? record.repeated_local_review_signature_count + 1 : 1,
+  };
+}
+
+export async function loadLocalReviewRepairContext(summaryPath: string | null) {
+  if (!summaryPath) {
+    return null;
+  }
+
+  const findingsPath = path.extname(summaryPath) === ".md" ? `${summaryPath.slice(0, -3)}.json` : null;
+  if (!findingsPath) {
+    return null;
+  }
+
+  try {
+    const raw = await fs.readFile(findingsPath, "utf8");
+    const artifact = JSON.parse(raw) as {
+      actionableFindings?: Array<{ file?: string | null }>;
+      rootCauseSummaries?: Array<{
+        severity?: "low" | "medium" | "high";
+        summary?: string;
+        file?: string | null;
+        start?: number | null;
+        end?: number | null;
+      }>;
+    };
+    const rootCauses = (artifact.rootCauseSummaries ?? [])
+      .filter((rootCause) => typeof rootCause.summary === "string" && rootCause.summary.trim() !== "")
+      .slice(0, 5)
+      .map((rootCause) => {
+        const start = typeof rootCause.start === "number" ? rootCause.start : null;
+        const end = typeof rootCause.end === "number" ? rootCause.end : start;
+        return {
+          severity: rootCause.severity ?? "medium",
+          summary: rootCause.summary!.trim(),
+          file: rootCause.file ?? null,
+          lines:
+            start == null ? null : end != null && end !== start ? `${start}-${end}` : `${start}`,
+        };
+      });
+    const relevantFiles = [...new Set([
+      ...rootCauses.map((rootCause) => rootCause.file).filter((filePath): filePath is string => Boolean(filePath)),
+      ...(artifact.actionableFindings ?? [])
+        .map((finding) => (typeof finding.file === "string" && finding.file.trim() !== "" ? finding.file : null))
+        .filter((filePath): filePath is string => Boolean(filePath)),
+    ])].slice(0, 10);
+
+    return {
+      summaryPath,
+      findingsPath,
+      relevantFiles,
+      rootCauses,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function classifyFailure(message: string | null | undefined): "timeout" | "command_error" {
@@ -424,13 +619,18 @@ function mergeConditionsSatisfied(pr: GitHubPullRequest, checks: PullRequestChec
 export function localReviewBlocksReady(
   record: Pick<
     IssueRunRecord,
-    "local_review_head_sha" | "local_review_findings_count" | "local_review_recommendation" | "local_review_degraded"
+    | "local_review_head_sha"
+    | "local_review_findings_count"
+    | "local_review_recommendation"
+    | "local_review_degraded"
+    | "local_review_verified_max_severity"
   >,
   pr: Pick<GitHubPullRequest, "headRefOid">,
 ): boolean {
   return (
     record.local_review_head_sha === pr.headRefOid &&
     (
+      record.local_review_verified_max_severity === "high" ||
       record.local_review_recommendation !== "ready" ||
       record.local_review_findings_count > 0 ||
       Boolean(record.local_review_degraded)
@@ -518,6 +718,14 @@ export function inferStateFromPullRequest(
     return "pr_open";
   }
 
+  if (localReviewRetryLoopStalled(config, record, pr, checks, reviewThreads)) {
+    return "blocked";
+  }
+
+  if (localReviewHighSeverityNeedsFix(record, pr)) {
+    return "local_review_fix";
+  }
+
   const checkSummary = summarizeChecks(checks);
   if (checkSummary.hasFailing) {
     return "repairing_ci";
@@ -576,6 +784,7 @@ function shouldRunAgent(
   const inferred = inferStateFromPullRequest(config, record, pr, checks, reviewThreads);
   return (
     inferred === "draft_pr" ||
+    inferred === "local_review_fix" ||
     inferred === "repairing_ci" ||
     inferred === "resolving_conflict" ||
     inferred === "addressing_review" ||
@@ -718,7 +927,7 @@ export function formatDetailedStatus(args: {
     `last_failure_kind=${activeRecord.last_failure_kind ?? "none"}`,
     `last_failure_signature=${activeRecord.last_failure_signature ?? "none"}`,
     `retries timeout=${activeRecord.timeout_retry_count} verification=${activeRecord.blocked_verification_retry_count} same_blocker=${activeRecord.repeated_blocker_count} same_failure_signature=${activeRecord.repeated_failure_signature_count}`,
-    `local_review head=${activeRecord.local_review_head_sha ?? "none"} severity=${activeRecord.local_review_max_severity ?? "none"} findings=${activeRecord.local_review_findings_count} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} ran_at=${activeRecord.local_review_run_at ?? "none"}`,
+    `local_review head=${activeRecord.local_review_head_sha ?? "none"} severity=${activeRecord.local_review_max_severity ?? "none"} findings=${activeRecord.local_review_findings_count} root_causes=${activeRecord.local_review_root_cause_count} verified_findings=${activeRecord.local_review_verified_findings_count} verified_max_severity=${activeRecord.local_review_verified_max_severity ?? "none"} recommendation=${activeRecord.local_review_recommendation ?? "none"} degraded=${activeRecord.local_review_degraded ? "yes" : "no"} signature=${activeRecord.last_local_review_signature ?? "none"} repeated=${activeRecord.repeated_local_review_signature_count} ran_at=${activeRecord.local_review_run_at ?? "none"}`,
   ];
 
   if (activeRecord.last_error) {
@@ -1512,6 +1721,10 @@ export class Supervisor {
       await syncJournal(record);
 
       const journalContent = await readIssueJournal(journalPath);
+      const localReviewRepairContext =
+        record.state === "local_review_fix"
+          ? await loadLocalReviewRepairContext(record.local_review_summary_path)
+          : null;
 
       // Get policy for agent execution
       const policy = resolveAgentExecutionPolicy(this.config, record.state, record);
@@ -1530,6 +1743,7 @@ export class Supervisor {
         failureContext: record.last_failure_context,
         previousSummary: previousAgentSummary,
         previousError,
+        localReviewRepairContext,
         gsdEnabled: this.config.gsdEnabled,
         gsdPlanningFiles: this.config.gsdPlanningFiles,
         alwaysReadFiles: memoryArtifacts.alwaysReadFiles,
@@ -1707,7 +1921,11 @@ export class Supervisor {
         preRunState === "addressing_review"
           ? Array.from(new Set([...record.processed_review_thread_ids, ...reviewThreadsToProcess.map((thread) => thread.id)]))
           : record.processed_review_thread_ids;
-      const postRunFailureContext = inferFailureContext(this.config, record, pr, checks, reviewThreads);
+      const postRunFailureContext =
+        inferFailureContext(this.config, record, pr, checks, reviewThreads) ??
+        (pr && inferStateFromPullRequest(this.config, record, pr, checks, reviewThreads) === "local_review_fix"
+          ? localReviewFailureContext(record)
+          : null);
       const postRunReviewWaitPatch = pr ? syncReviewWaitWindow(record, pr) : {};
       const postRunState = pr
         ? inferStateFromPullRequest(
@@ -1725,7 +1943,10 @@ export class Supervisor {
         blocked_verification_retry_count: pr ? 0 : record.blocked_verification_retry_count,
         repeated_blocker_count: 0,
         last_blocker_signature: null,
-        last_error: postRunState === "blocked" && postRunFailureContext ? truncate(postRunFailureContext.summary, 1000) : record.last_error,
+        last_error:
+          (postRunState === "blocked" || postRunState === "local_review_fix") && postRunFailureContext
+            ? truncate(postRunFailureContext.summary, 1000)
+            : record.last_error,
         last_failure_context: postRunFailureContext,
         ...applyFailureSignature(record, postRunFailureContext),
         blocked_reason: pr && postRunState === "blocked" ? blockedReasonFromReviewState(this.config, reviewThreads) : null,
@@ -1769,6 +1990,11 @@ export class Supervisor {
             alwaysReadFiles: memoryArtifacts.alwaysReadFiles,
             onDemandFiles: memoryArtifacts.onDemandFiles,
           });
+          const actionableSignature =
+            localReview.recommendation !== "ready"
+              ? `local-review:${localReview.maxSeverity}:${localReview.verifiedMaxSeverity}:${localReview.rootCauseCount}:${localReview.verifiedFindingsCount}:${localReview.degraded ? "degraded" : "clean"}`
+              : null;
+          const signatureTracking = nextLocalReviewSignatureTracking(record, refreshedPr.headRefOid, actionableSignature);
 
           record = this.stateStore.touch(record, {
             state: "draft_pr",
@@ -1777,15 +2003,24 @@ export class Supervisor {
             local_review_run_at: localReview.ranAt,
             local_review_max_severity: localReview.maxSeverity,
             local_review_findings_count: localReview.findingsCount,
+            local_review_root_cause_count: localReview.rootCauseCount,
+            local_review_verified_max_severity: localReview.verifiedMaxSeverity,
+            local_review_verified_findings_count: localReview.verifiedFindingsCount,
             local_review_recommendation: localReview.recommendation,
             local_review_degraded: localReview.degraded,
-            blocked_reason: localReview.recommendation !== "ready" ? "verification" : null,
+            ...signatureTracking,
+            blocked_reason:
+              localReview.recommendation !== "ready" && localReview.verifiedMaxSeverity === "high"
+                ? "verification"
+                : null,
             last_error:
               localReview.recommendation !== "ready"
                 ? truncate(
                     localReview.degraded
                       ? "Local review completed in a degraded state. PR will remain draft until local review succeeds cleanly."
-                      : `Local review requested changes (${localReview.findingsCount} actionable findings). PR will remain draft until the branch is updated and re-reviewed.`,
+                      : localReview.verifiedMaxSeverity === "high"
+                        ? `Local review found verified high-severity findings (${localReview.findingsCount} actionable findings across ${localReview.rootCauseCount} root cause(s)). A local_review_fix repair pass is required.`
+                        : `Local review requested changes (${localReview.findingsCount} actionable findings across ${localReview.rootCauseCount} root cause(s)). PR will remain draft until the branch is updated and re-reviewed.`,
                     500,
                   )
                 : null,
@@ -1799,8 +2034,13 @@ export class Supervisor {
             local_review_run_at: nowIso(),
             local_review_max_severity: null,
             local_review_findings_count: 0,
+            local_review_root_cause_count: 0,
+            local_review_verified_max_severity: null,
+            local_review_verified_findings_count: 0,
             local_review_recommendation: "unknown",
             local_review_degraded: true,
+            last_local_review_signature: null,
+            repeated_local_review_signature_count: 0,
             blocked_reason: "verification",
             last_error: `Local review failed: ${truncate(message, 500) ?? "unknown error"}`,
           });
@@ -1809,6 +2049,19 @@ export class Supervisor {
         state.issues[String(record.issue_number)] = record;
         await this.stateStore.save(state);
         await syncJournal(record);
+      }
+
+      if (
+        !ranLocalReviewThisCycle &&
+        localReviewRetryLoopCandidate(this.config, record, refreshedPr, refreshedChecks, refreshedReviewThreads) &&
+        record.last_head_sha === refreshedPr.headRefOid &&
+        record.local_review_head_sha === refreshedPr.headRefOid
+      ) {
+        record = this.stateStore.touch(record, {
+          repeated_local_review_signature_count: record.repeated_local_review_signature_count + 1,
+        });
+        state.issues[String(record.issue_number)] = record;
+        await this.stateStore.save(state);
       }
 
       if (

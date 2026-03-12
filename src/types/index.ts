@@ -3,6 +3,7 @@ export type RunState =
   | "planning"
   | "reproducing"
   | "implementing"
+  | "local_review_fix"
   | "stabilizing"
   | "draft_pr"
   | "local_review"
@@ -122,8 +123,13 @@ export interface IssueRunRecord {
   local_review_run_at: string | null;
   local_review_max_severity: "none" | "low" | "medium" | "high" | null;
   local_review_findings_count: number;
+  local_review_root_cause_count: number;
+  local_review_verified_max_severity: "none" | "low" | "medium" | "high" | null;
+  local_review_verified_findings_count: number;
   local_review_recommendation: "ready" | "changes_requested" | "unknown" | null;
   local_review_degraded: boolean;
+  last_local_review_signature: string | null;
+  repeated_local_review_signature_count: number;
   attempt_count: number;
   timeout_retry_count: number;
   blocked_verification_retry_count: number;

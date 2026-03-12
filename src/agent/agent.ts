@@ -33,6 +33,7 @@ export function extractStateHint(message: string): RunState | null {
     "planning",
     "reproducing",
     "implementing",
+    "local_review_fix",
     "stabilizing",
     "draft_pr",
     "local_review",
@@ -98,6 +99,13 @@ function phaseGuidance(state: RunState): string[] {
     return [
       "- You already have progress in the branch. Focus on turning current changes into a clean, reviewable checkpoint.",
       "- Prefer focused fixes and verification over broad rework.",
+    ];
+  }
+
+  if (state === "local_review_fix") {
+    return [
+      "- Focus only on the active verified local-review blockers for the current head.",
+      "- Make the smallest change that resolves the recorded root cause instead of doing generic draft iteration.",
     ];
   }
 
@@ -178,6 +186,17 @@ export function buildAgentPrompt(input: {
   failureContext?: FailureContext | null;
   previousSummary?: string | null;
   previousError?: string | null;
+  localReviewRepairContext?: {
+    summaryPath: string;
+    findingsPath: string;
+    relevantFiles: string[];
+    rootCauses: Array<{
+      severity: "low" | "medium" | "high";
+      summary: string;
+      file: string | null;
+      lines: string | null;
+    }>;
+  } | null;
   gsdEnabled?: boolean;
   gsdPlanningFiles?: string[];
   category: AgentCategory;
@@ -228,6 +247,33 @@ export function buildAgentPrompt(input: {
         .join("\n")
     : "No structured failure context recorded.";
 
+  const localReviewRepairSummary =
+    input.state === "local_review_fix"
+      ? [
+          "Active local-review repair context:",
+          ...(input.localReviewRepairContext
+            ? [
+                `- Summary artifact: ${input.localReviewRepairContext.summaryPath}`,
+                `- Findings artifact: ${input.localReviewRepairContext.findingsPath}`,
+                ...(input.localReviewRepairContext.relevantFiles.length > 0
+                  ? [
+                      "- Relevant files to inspect first:",
+                      ...input.localReviewRepairContext.relevantFiles.map((filePath) => `  - ${filePath}`),
+                    ]
+                  : ["- Relevant files to inspect first: none identified"]),
+                ...(input.localReviewRepairContext.rootCauses.length > 0
+                  ? [
+                      "- Root causes:",
+                      ...input.localReviewRepairContext.rootCauses.map((rootCause, index) =>
+                        `  - ${index + 1}. severity=${rootCause.severity} file=${rootCause.file ?? "multiple"} lines=${rootCause.lines ?? "multiple"} summary=${rootCause.summary}`,
+                      ),
+                    ]
+                  : ["- Root causes: none available"]),
+              ]
+            : ["- No parsed local-review repair context was available. Read the review artifact before editing."]),
+        ]
+      : [];
+
   return [
     `You are operating inside a dedicated worktree for ${input.repoSlug}.`,
     `Current issue: #${input.issue.number} ${input.issue.title}`,
@@ -256,6 +302,7 @@ export function buildAgentPrompt(input: {
     "",
     "Structured failure context:",
     failureSummary,
+    ...(localReviewRepairSummary.length > 0 ? ["", ...localReviewRepairSummary] : []),
     ...(input.alwaysReadFiles.length > 0
       ? [
           "",
@@ -313,7 +360,7 @@ export function buildAgentPrompt(input: {
     "",
     "Respond in this exact footer format at the end:",
     "Summary: <short summary>",
-    "State hint: <reproducing|implementing|stabilizing|draft_pr|local_review|pr_open|repairing_ci|resolving_conflict|waiting_ci|addressing_review|blocked|failed>",
+    "State hint: <reproducing|implementing|local_review_fix|stabilizing|draft_pr|local_review|pr_open|repairing_ci|resolving_conflict|waiting_ci|addressing_review|blocked|failed>",
     "Blocked reason: <requirements|permissions|secrets|verification|manual_review|unknown|none>",
     "Tests: <what you ran or not run>",
     "Failure signature: <stable short signature for the current primary failure or none>",
