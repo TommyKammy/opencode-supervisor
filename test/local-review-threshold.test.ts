@@ -99,6 +99,26 @@ test("runLocalReview filters actionable findings by confidence threshold in arti
             end: 12,
           },
         ],
+        rootCauseSummaries: [
+          {
+            summary: "Head comparison still routes severe review blockers through draft iteration.",
+            severity: "high",
+            file: "src/core/supervisor.ts",
+            start: 10,
+            end: 12,
+          },
+        ],
+        verifiedFindings: [
+          {
+            title: "High confidence defect",
+            body: "This can break in production.",
+            severity: "high",
+            confidence: 0.95,
+            file: "src/core/supervisor.ts",
+            start: 10,
+            end: 10,
+          },
+        ],
       }),
       "REVIEW_FINDINGS_JSON_END",
     ].join("\n"),
@@ -119,15 +139,23 @@ test("runLocalReview filters actionable findings by confidence threshold in arti
     });
 
     assert.equal(result.findingsCount, 1);
+    assert.equal(result.rootCauseCount, 1);
+    assert.equal(result.verifiedFindingsCount, 1);
+    assert.equal(result.verifiedMaxSeverity, "high");
     assert.equal(result.recommendation, "changes_requested");
 
     const summary = await fs.readFile(result.summaryPath, "utf8");
     assert.match(summary, /Confidence threshold:\s+0\.70/);
     assert.match(summary, /Actionable findings:\s+1/);
+    assert.match(summary, /Root causes:\s+1/);
+    assert.match(summary, /Verified findings:\s+1/);
 
     const findings = JSON.parse(await fs.readFile(result.findingsPath, "utf8")) as Record<string, unknown>;
     assert.equal(findings.confidenceThreshold, 0.7);
     assert.equal(findings.actionableFindingsCount, 1);
+    assert.equal(findings.rootCauseCount, 1);
+    assert.equal(findings.verifiedFindingsCount, 1);
+    assert.equal(findings.verifiedMaxSeverity, "high");
   } finally {
     if (typeof priorTask === "undefined") {
       delete (globalThis as Record<string, unknown>).task;

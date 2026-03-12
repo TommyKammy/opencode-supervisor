@@ -18,13 +18,24 @@ export interface LocalReviewFinding {
   end: number | null;
 }
 
+export interface LocalReviewRootCauseSummary {
+  summary: string;
+  severity: ActionableSeverity;
+  file: string | null;
+  start: number | null;
+  end: number | null;
+}
+
 export interface LocalReviewResult {
   ranAt: string;
   summaryPath: string;
   findingsPath: string;
   summary: string;
   findingsCount: number;
+  rootCauseCount: number;
   maxSeverity: LocalReviewSeverity;
+  verifiedFindingsCount: number;
+  verifiedMaxSeverity: LocalReviewSeverity;
   recommendation: "ready" | "changes_requested" | "unknown";
   degraded: boolean;
   rawOutput: string;
@@ -111,12 +122,58 @@ function maxSeverity(findings: Pick<LocalReviewFinding, "severity">[]): LocalRev
   return "none";
 }
 
+function normalizeRootCauseSummary(value: unknown): LocalReviewRootCauseSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const summary = typeof record.summary === "string" ? normalizeWhitespace(record.summary) : "";
+  const severity = normalizeSeverity(record.severity);
+  if (!summary || !severity) {
+    return null;
+  }
+
+  let start =
+    typeof record.start === "number" && Number.isInteger(record.start) && record.start > 0
+      ? record.start
+      : null;
+  let end =
+    typeof record.end === "number" && Number.isInteger(record.end) && record.end > 0
+      ? record.end
+      : start;
+
+  if (start === null && end !== null) {
+    start = end;
+  }
+
+  return {
+    summary,
+    severity,
+    file: typeof record.file === "string" && record.file.trim() !== "" ? record.file.trim() : null,
+    start,
+    end,
+  };
+}
+
+function deriveRootCauseSummaries(findings: LocalReviewFinding[]): LocalReviewRootCauseSummary[] {
+  return findings.map((finding) => ({
+    summary: finding.body,
+    severity: finding.severity,
+    file: finding.file,
+    start: finding.start,
+    end: finding.end,
+  }));
+}
+
 function parseFooter(output: string): {
   summary: string;
   reportedFindingsCount: number;
   maxSeverity: LocalReviewSeverity;
   recommendation: LocalReviewResult["recommendation"];
   findings: LocalReviewFinding[];
+  rootCauseSummaries: LocalReviewRootCauseSummary[];
+  verifiedFindings: LocalReviewFinding[];
   hasStructuredFindingsPayload: boolean;
 } {
   const summaryMatch = output.match(/Review summary:\s*(.+)/i);
@@ -126,6 +183,8 @@ function parseFooter(output: string): {
   const jsonMatch = output.match(/REVIEW_FINDINGS_JSON_START\s*([\s\S]*?)\s*REVIEW_FINDINGS_JSON_END/i);
 
   let findings: LocalReviewFinding[] = [];
+  let rootCauseSummaries: LocalReviewRootCauseSummary[] = [];
+  let verifiedFindings: LocalReviewFinding[] = [];
   let hasStructuredFindingsPayload = false;
 
   if (jsonMatch?.[1]) {
@@ -137,9 +196,25 @@ function parseFooter(output: string): {
           .map((item) => normalizeFinding(item))
           .filter((item): item is LocalReviewFinding => item !== null);
       }
+      if (Array.isArray(parsed.rootCauseSummaries)) {
+        rootCauseSummaries = parsed.rootCauseSummaries
+          .map((item) => normalizeRootCauseSummary(item))
+          .filter((item): item is LocalReviewRootCauseSummary => item !== null);
+      }
+      if (Array.isArray(parsed.verifiedFindings)) {
+        verifiedFindings = parsed.verifiedFindings
+          .map((item) => normalizeFinding(item))
+          .filter((item): item is LocalReviewFinding => item !== null);
+      }
     } catch {
       findings = [];
+      rootCauseSummaries = [];
+      verifiedFindings = [];
     }
+  }
+
+  if (hasStructuredFindingsPayload && rootCauseSummaries.length === 0) {
+    rootCauseSummaries = deriveRootCauseSummaries(findings);
   }
 
   return {
@@ -148,6 +223,8 @@ function parseFooter(output: string): {
     maxSeverity: (severityMatch?.[1]?.toLowerCase() as LocalReviewSeverity | undefined) ?? "none",
     recommendation: (recommendationMatch?.[1]?.toLowerCase() as "ready" | "changes_requested" | undefined) ?? "unknown",
     findings,
+    rootCauseSummaries,
+    verifiedFindings,
     hasStructuredFindingsPayload,
   };
 }
@@ -216,9 +293,11 @@ function buildLocalReviewPrompt(args: {
     `- Treat findings with confidence >= ${args.confidenceThreshold.toFixed(2)} as actionable.`,
     "- Include all findings in a JSON object between exact markers:",
     "  REVIEW_FINDINGS_JSON_START",
-    '  {"findings":[{"title":"...","body":"...","severity":"low|medium|high","confidence":0.0,"file":"path","start":1,"end":1}]}',
+    '  {"findings":[{"title":"...","body":"...","severity":"low|medium|high","confidence":0.0,"file":"path","start":1,"end":1}],"rootCauseSummaries":[{"summary":"...","severity":"low|medium|high","file":"path","start":1,"end":1}],"verifiedFindings":[{"title":"...","body":"...","severity":"low|medium|high","confidence":0.0,"file":"path","start":1,"end":1}]}',
     "  REVIEW_FINDINGS_JSON_END",
-    "- Return an empty findings array when there are no actionable findings.",
+    "- `verifiedFindings` should only include findings you are confident are real blockers after re-checking the evidence.",
+    "- `rootCauseSummaries` should compress overlapping findings into repair-oriented root causes when possible.",
+    "- Return empty arrays when there are no actionable findings.",
     "",
     "Respond with a concise review and end with this exact footer:",
     "Review summary: <short summary>",
@@ -281,9 +360,16 @@ export async function runLocalReview(args: {
   const actionableFindings = parsed.findings.filter(
     (finding) => finding.confidence >= args.config.localReviewConfidenceThreshold,
   );
+  const verifiedActionableFindings = parsed.verifiedFindings.filter(
+    (finding) => finding.confidence >= args.config.localReviewConfidenceThreshold,
+  );
   const useThresholdFiltering = parsed.hasStructuredFindingsPayload;
   const findingsCount = useThresholdFiltering ? actionableFindings.length : parsed.reportedFindingsCount;
   const effectiveMaxSeverity = useThresholdFiltering ? maxSeverity(actionableFindings) : parsed.maxSeverity;
+  const rootCauseSummaries = useThresholdFiltering ? parsed.rootCauseSummaries : [];
+  const rootCauseCount = rootCauseSummaries.length;
+  const verifiedFindingsCount = useThresholdFiltering ? verifiedActionableFindings.length : 0;
+  const verifiedMaxSeverity = useThresholdFiltering ? maxSeverity(verifiedActionableFindings) : "none";
   const recommendation = degraded
     ? "unknown"
     : useThresholdFiltering
@@ -316,7 +402,10 @@ export async function runLocalReview(args: {
       `- Ran at: ${ranAt}`,
       `- Confidence threshold: ${args.config.localReviewConfidenceThreshold.toFixed(2)}`,
       `- Actionable findings: ${findingsCount}`,
+      `- Root causes: ${rootCauseCount}`,
       `- Max severity: ${effectiveMaxSeverity}`,
+      `- Verified findings: ${verifiedFindingsCount}`,
+      `- Verified max severity: ${verifiedMaxSeverity}`,
       `- Recommendation: ${recommendation}`,
       `- Degraded: ${degraded ? "yes" : "no"}`,
       "",
@@ -340,9 +429,14 @@ export async function runLocalReview(args: {
         reportedFindingsCount: parsed.reportedFindingsCount,
         findingsCount,
         actionableFindingsCount: findingsCount,
+        rootCauseCount,
         maxSeverity: effectiveMaxSeverity,
         parsedFindings: parsed.findings,
         actionableFindings,
+        rootCauseSummaries,
+        verifiedFindings: verifiedActionableFindings,
+        verifiedFindingsCount,
+        verifiedMaxSeverity,
         recommendation,
         degraded,
       },
@@ -359,7 +453,10 @@ export async function runLocalReview(args: {
     rawOutput,
     summary,
     findingsCount,
+    rootCauseCount,
     maxSeverity: effectiveMaxSeverity,
+    verifiedFindingsCount,
+    verifiedMaxSeverity,
     recommendation,
     degraded,
   };
