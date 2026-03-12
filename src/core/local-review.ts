@@ -234,7 +234,11 @@ export function shouldRunLocalReview(
   record: { local_review_head_sha: string | null },
   pr: GitHubPullRequest,
 ): boolean {
-  return config.localReviewEnabled && pr.isDraft && record.local_review_head_sha !== pr.headRefOid;
+  return (
+    config.localReviewEnabled &&
+    record.local_review_head_sha !== pr.headRefOid &&
+    (pr.isDraft || config.localReviewPolicy === "block_merge")
+  );
 }
 
 function buildLocalReviewPrompt(args: {

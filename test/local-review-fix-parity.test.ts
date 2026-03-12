@@ -23,6 +23,7 @@ function createConfig(overrides: Partial<SupervisorConfig> = {}): SupervisorConf
     gsdCodexConfigDir: undefined,
     gsdPlanningFiles: ["PROJECT.md", "REQUIREMENTS.md", "ROADMAP.md", "STATE.md"],
     localReviewEnabled: true,
+    localReviewPolicy: "block_ready",
     localReviewRoles: ["reviewer"],
     localReviewArtifactDir: "/tmp/reviews",
     localReviewConfidenceThreshold: 0.7,

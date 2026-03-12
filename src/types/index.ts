@@ -29,6 +29,7 @@ export type AgentCategory =
   | "artistry";
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
+export type LocalReviewPolicy = "advisory" | "block_ready" | "block_merge";
 
 export interface SupervisorConfig {
   repoPath: string;
@@ -53,6 +54,7 @@ export interface SupervisorConfig {
   localReviewRoles: string[];
   localReviewArtifactDir: string;
   localReviewConfidenceThreshold: number;
+  localReviewPolicy: LocalReviewPolicy;
   reviewBotLogins: string[];
   humanReviewBlocksMerge: boolean;
   issueJournalRelativePath: string;

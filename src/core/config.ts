@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AgentCategory, ReasoningEffort, RunState, SupervisorConfig } from "../types";
+import { AgentCategory, LocalReviewPolicy, ReasoningEffort, RunState, SupervisorConfig } from "../types";
 import { isValidGitRefName, parseJson, resolveMaybeRelative } from "../utils";
 
 const DEFAULT_CONFIG_FILE = "supervisor.config.json";
@@ -69,6 +69,7 @@ const VALID_RUN_STATES = new Set<RunState>([
   "blocked",
   "failed",
 ]);
+const VALID_LOCAL_REVIEW_POLICIES = new Set<LocalReviewPolicy>(["advisory", "block_ready", "block_merge"]);
 
 function parseEnumPolicy<T extends string>(
   value: unknown,
@@ -221,6 +222,10 @@ export function loadConfig(configPath?: string): SupervisorConfig {
       raw.localReviewConfidenceThreshold <= 1
         ? raw.localReviewConfidenceThreshold
         : 0.7,
+    localReviewPolicy:
+      typeof raw.localReviewPolicy === "string" && VALID_LOCAL_REVIEW_POLICIES.has(raw.localReviewPolicy as LocalReviewPolicy)
+        ? (raw.localReviewPolicy as LocalReviewPolicy)
+        : "block_ready",
     reviewBotLogins: Array.isArray(raw.reviewBotLogins)
       ? raw.reviewBotLogins
           .filter((value): value is string => typeof value === "string" && value.trim() !== "")

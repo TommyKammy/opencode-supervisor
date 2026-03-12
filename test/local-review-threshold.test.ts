@@ -23,6 +23,7 @@ function makeConfig(artifactDir: string): SupervisorConfig {
     gsdInstallScope: "global",
     gsdPlanningFiles: ["PROJECT.md", "REQUIREMENTS.md", "ROADMAP.md", "STATE.md"],
     localReviewEnabled: true,
+    localReviewPolicy: "block_ready",
     localReviewRoles: ["reviewer"],
     localReviewArtifactDir: artifactDir,
     localReviewConfidenceThreshold: 0.7,
