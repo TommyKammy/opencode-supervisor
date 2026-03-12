@@ -27,6 +27,22 @@ async function createExecutable(filePath: string, body: string): Promise<void> {
   await fs.writeFile(filePath, body, { encoding: "utf8", mode: 0o755 });
 }
 
+function currentTypeScriptExecArgs(): string[] {
+  const passthroughArgs: string[] = [];
+  for (let index = 0; index < process.execArgv.length; index += 1) {
+    const token = process.execArgv[index];
+    if (token === "--require" || token === "--import" || token === "--loader") {
+      const value = process.execArgv[index + 1];
+      if (value) {
+        passthroughArgs.push(token, value);
+        index += 1;
+      }
+    }
+  }
+
+  return passthroughArgs;
+}
+
 test("loop mode handles SIGTERM with explicit graceful shutdown output", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-loop-shutdown-"));
   try {
@@ -63,7 +79,7 @@ test("loop mode handles SIGTERM with explicit graceful shutdown output", async (
 
     const child = spawn(
       process.execPath,
-      ["--import", "tsx", "src/index.ts", "loop", "--config", configPath],
+      [...currentTypeScriptExecArgs(), "src/index.ts", "loop", "--config", configPath],
       {
         cwd: path.resolve(__dirname, ".."),
         env: {

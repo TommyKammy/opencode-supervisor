@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runAgentTurn } from "../agent/agent";
+import { detectLocalReviewRoles } from "./review-role-detector";
 import { GitHubIssue, GitHubPullRequest, SupervisorConfig } from "../types";
 import { ensureDir, nowIso, truncate } from "../utils";
 
@@ -236,7 +237,19 @@ export async function runLocalReview(args: {
   pr: GitHubPullRequest;
   alwaysReadFiles: string[];
   onDemandFiles: string[];
+  agentTurnRunner?: typeof runAgentTurn;
 }): Promise<LocalReviewResult> {
+  const detectedRoles =
+    args.config.localReviewRoles.length === 0
+      ? await detectLocalReviewRoles({ ...args.config, repoPath: args.workspacePath })
+      : [];
+  const roles =
+    args.config.localReviewRoles.length > 0
+      ? args.config.localReviewRoles
+      : detectedRoles.length > 0
+        ? detectedRoles
+        : ["reviewer", "explorer"];
+  const agentTurnRunner = args.agentTurnRunner ?? runAgentTurn;
   const prompt = buildLocalReviewPrompt({
     repoSlug: args.config.repoSlug,
     issue: args.issue,
@@ -244,13 +257,13 @@ export async function runLocalReview(args: {
     workspacePath: args.workspacePath,
     defaultBranch: args.defaultBranch,
     pr: args.pr,
-    roles: args.config.localReviewRoles,
+    roles,
     alwaysReadFiles: args.alwaysReadFiles,
     onDemandFiles: args.onDemandFiles,
     confidenceThreshold: args.config.localReviewConfidenceThreshold,
   });
 
-  const result = await runAgentTurn(
+  const result = await agentTurnRunner(
     args.config,
     args.workspacePath,
     prompt,
