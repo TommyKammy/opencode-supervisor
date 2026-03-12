@@ -237,10 +237,11 @@ export async function runLocalReview(args: {
   pr: GitHubPullRequest;
   alwaysReadFiles: string[];
   onDemandFiles: string[];
+  agentTurnRunner?: typeof runAgentTurn;
 }): Promise<LocalReviewResult> {
   const detectedRoles =
     args.config.localReviewRoles.length === 0
-      ? await detectLocalReviewRoles(args.config)
+      ? await detectLocalReviewRoles({ ...args.config, repoPath: args.workspacePath })
       : [];
   const roles =
     args.config.localReviewRoles.length > 0
@@ -248,6 +249,7 @@ export async function runLocalReview(args: {
       : detectedRoles.length > 0
         ? detectedRoles
         : ["reviewer", "explorer"];
+  const agentTurnRunner = args.agentTurnRunner ?? runAgentTurn;
   const prompt = buildLocalReviewPrompt({
     repoSlug: args.config.repoSlug,
     issue: args.issue,
@@ -261,7 +263,7 @@ export async function runLocalReview(args: {
     confidenceThreshold: args.config.localReviewConfidenceThreshold,
   });
 
-  const result = await runAgentTurn(
+  const result = await agentTurnRunner(
     args.config,
     args.workspacePath,
     prompt,

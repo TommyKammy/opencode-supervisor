@@ -4,16 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runLocalReview } from "../src/core/local-review";
-import { GitHubIssue, GitHubPullRequest, SupervisorConfig } from "../src/types";
+import { AgentTurnResult, GitHubIssue, GitHubPullRequest, SupervisorConfig } from "../src/types";
 
-function makeConfig(repoPath: string, artifactDir: string): SupervisorConfig {
+function makeConfig(repoPath: string, artifactDir: string, tempDir: string): SupervisorConfig {
   return {
     repoPath,
     repoSlug: "owner/repo",
     defaultBranch: "main",
-    workspaceRoot: "/tmp/workspaces",
+    workspaceRoot: path.join(tempDir, "workspaces"),
     stateBackend: "json",
-    stateFile: "/tmp/state.json",
+    stateFile: path.join(tempDir, "state.json"),
     agentCategoryByState: {},
     reasoningEffortByState: {},
     reasoningEscalateOnRepeatedFailure: true,
@@ -66,56 +66,70 @@ const PR: GitHubPullRequest = {
   reviewDecision: null,
 };
 
-test("runLocalReview auto-detects specialist roles when localReviewRoles is empty", async () => {
+test("runLocalReview auto-detects specialist roles from the reviewed workspace when localReviewRoles is empty", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-local-review-roles-"));
-  const repoPath = path.join(tempDir, "repo");
+  const configRepoPath = path.join(tempDir, "config-repo");
+  const workspacePath = path.join(tempDir, "workspace");
   const artifactDir = path.join(tempDir, "artifacts");
   const capturedPrompts: string[] = [];
-  const priorTask = (globalThis as Record<string, unknown>).task;
 
-  await fs.mkdir(path.join(repoPath, ".github", "workflows"), { recursive: true });
-  await fs.mkdir(path.join(repoPath, "src"), { recursive: true });
-  await fs.writeFile(path.join(repoPath, "package.json"), "{}\n", "utf8");
-  await fs.writeFile(path.join(repoPath, ".github", "workflows", "ci.yml"), "name: CI\n", "utf8");
-  await fs.writeFile(path.join(repoPath, "src", "ci-workflow.test.ts"), "import test from 'node:test';\n", "utf8");
+  await fs.mkdir(configRepoPath, { recursive: true });
+  await fs.mkdir(path.join(workspacePath, ".github", "workflows"), { recursive: true });
+  await fs.mkdir(path.join(workspacePath, "src"), { recursive: true });
+  await fs.writeFile(path.join(workspacePath, "package.json"), "{}\n", "utf8");
+  await fs.writeFile(path.join(workspacePath, ".github", "workflows", "ci.yml"), "name: CI\n", "utf8");
+  await fs.writeFile(path.join(workspacePath, "src", "ci-workflow.test.ts"), "import test from 'node:test';\n", "utf8");
 
-  (globalThis as Record<string, unknown>).task = async ({ prompt }: { prompt: string }) => {
+  const agentTurnRunner = async (
+    _config: SupervisorConfig,
+    _workspacePath: string,
+    prompt: string,
+  ): Promise<AgentTurnResult> => {
     capturedPrompts.push(prompt);
+    const output = [
+      "Review summary: No actionable findings.",
+      "Findings count: 0",
+      "Max severity: none",
+      "Recommendation: ready",
+      "REVIEW_FINDINGS_JSON_START",
+      JSON.stringify({ findings: [] }),
+      "REVIEW_FINDINGS_JSON_END",
+    ].join("\n");
     return {
       sessionId: "session-roles",
       exitCode: 0,
-      output: [
-        "Review summary: No actionable findings.",
-        "Findings count: 0",
-        "Max severity: none",
-        "Recommendation: ready",
-        "REVIEW_FINDINGS_JSON_START",
-        JSON.stringify({ findings: [] }),
-        "REVIEW_FINDINGS_JSON_END",
-      ].join("\n"),
+      lastMessage: output,
+      stderr: "",
+      stdout: output,
     };
   };
 
   try {
     await runLocalReview({
-      config: makeConfig(repoPath, artifactDir),
+      config: makeConfig(configRepoPath, artifactDir, tempDir),
       issue: ISSUE,
       branch: "opencode/issue-21",
-      workspacePath: repoPath,
+      workspacePath,
       defaultBranch: "main",
       pr: PR,
       alwaysReadFiles: [],
       onDemandFiles: [],
+      agentTurnRunner,
     });
 
     assert.equal(capturedPrompts.length, 1);
-    assert.match(capturedPrompts[0], /roles such as: reviewer, explorer, github_actions_semantics_reviewer, workflow_test_reviewer, portability_reviewer/);
-  } finally {
-    if (typeof priorTask === "undefined") {
-      delete (globalThis as Record<string, unknown>).task;
-    } else {
-      (globalThis as Record<string, unknown>).task = priorTask;
+    const prompt = capturedPrompts[0];
+    const expectedRoles = [
+      "reviewer",
+      "explorer",
+      "github_actions_semantics_reviewer",
+      "workflow_test_reviewer",
+      "portability_reviewer",
+    ];
+    for (const role of expectedRoles) {
+      assert.match(prompt, new RegExp(`\\b${role}\\b`));
     }
+  } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });

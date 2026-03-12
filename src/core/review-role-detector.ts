@@ -23,14 +23,13 @@ async function existsAt(repoPath: string, relativePath: string): Promise<boolean
 }
 
 async function matchingPaths(repoPath: string, relativePaths: string[]): Promise<string[]> {
-  const matches: string[] = [];
-  for (const relativePath of relativePaths) {
-    if (await existsAt(repoPath, relativePath)) {
-      matches.push(relativePath);
-    }
-  }
-
-  return matches;
+  const results = await Promise.all(
+    relativePaths.map(async (relativePath) => ({
+      relativePath,
+      exists: await existsAt(repoPath, relativePath),
+    })),
+  );
+  return results.filter((result) => result.exists).map((result) => result.relativePath);
 }
 
 async function detectRepoSignals(repoPath: string): Promise<{
