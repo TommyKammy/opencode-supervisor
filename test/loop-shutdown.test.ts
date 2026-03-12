@@ -62,8 +62,8 @@ test("loop mode handles SIGTERM with explicit graceful shutdown output", async (
     );
 
     const child = spawn(
-      process.execPath,
-      ["--import", "tsx", "src/index.ts", "loop", "--config", configPath],
+      "tsx",
+      ["src/index.ts", "loop", "--config", configPath],
       {
         cwd: path.resolve(__dirname, ".."),
         env: {
