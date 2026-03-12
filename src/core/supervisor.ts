@@ -333,6 +333,16 @@ function shouldAutoRetryBlockedVerification(record: IssueRunRecord, config: Supe
   );
 }
 
+export function shouldAutoRetryHandoffMissing(record: IssueRunRecord, config: SupervisorConfig): boolean {
+  return (
+    record.state === "blocked" &&
+    record.blocked_reason === "handoff_missing" &&
+    record.pr_number === null &&
+    hasAttemptBudgetRemaining(record, config) &&
+    record.repeated_failure_signature_count < config.sameFailureSignatureRepeatLimit
+  );
+}
+
 function hasAttemptBudgetRemaining(record: IssueRunRecord, config: SupervisorConfig): boolean {
   return record.attempt_count < config.maxAgentAttemptsPerIssue;
 }
@@ -346,7 +356,11 @@ function isEligibleForSelection(record: IssueRunRecord | undefined, config: Supe
     return true;
   }
 
-  return shouldAutoRetryTimeout(record, config) || shouldAutoRetryBlockedVerification(record, config);
+  return (
+    shouldAutoRetryTimeout(record, config) ||
+    shouldAutoRetryBlockedVerification(record, config) ||
+    shouldAutoRetryHandoffMissing(record, config)
+  );
 }
 
 export function summarizeChecks(checks: PullRequestCheck[]): { allPassing: boolean; hasPending: boolean; hasFailing: boolean } {
@@ -1197,7 +1211,7 @@ async function reconcileTrackedMergedButOpenIssues(
   }
 }
 
-async function reconcileStaleFailedIssueStates(
+export async function reconcileStaleFailedIssueStates(
   github: GitHubClient,
   stateStore: StateStore,
   state: SupervisorStateFile,
@@ -1212,6 +1226,27 @@ async function reconcileStaleFailedIssueStates(
   for (const record of Object.values(state.issues)) {
     if (recoveredCount >= MAX_RECOVERIES_PER_RUN) {
       break;
+    }
+
+    if (shouldAutoRetryHandoffMissing(record, config)) {
+      if (issueStateByNumber.get(record.issue_number) !== "OPEN") {
+        continue;
+      }
+
+      const updated = stateStore.touch(record, {
+        state: "queued",
+        blocked_reason: null,
+        last_error: null,
+        last_failure_kind: null,
+        last_blocker_signature: null,
+        agent_session_id: null,
+        review_wait_started_at: null,
+        review_wait_head_sha: null,
+      });
+      state.issues[String(record.issue_number)] = updated;
+      changed = true;
+      recoveredCount += 1;
+      continue;
     }
 
     if (record.state !== "failed" || record.pr_number === null) {
